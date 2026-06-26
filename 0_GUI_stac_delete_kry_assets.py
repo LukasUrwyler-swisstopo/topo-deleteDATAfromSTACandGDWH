@@ -156,11 +156,11 @@ def filter_items(items: List[Dict], search_term: str = "") -> List[Dict]:
     return [item for item in items if term in item.get("id", "").lower()]
 
 
-def delete_asset(base_url: str, auth: Tuple, item_id: str, asset_key: str) -> bool:
-    """Löscht einen einzelnen Asset. Gibt True bei Erfolg zurück."""
+def delete_asset(base_url: str, auth: Tuple, item_id: str, asset_key: str) -> Tuple[bool, int]:
+    """Löscht einen einzelnen Asset. Gibt (Erfolg, HTTP-Statuscode) zurück."""
     url = urljoin(base_url, f"collections/{COLLECTION_ID}/items/{item_id}/assets/{asset_key}")
     r   = _session_delete(url, auth)
-    return r.status_code in (200, 204)
+    return r.status_code in (200, 204), r.status_code
 
 
 def check_asset_status(href: str, auth: Tuple) -> int:
@@ -272,7 +272,7 @@ class KryDeleteApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("STAC Asset-Lösch-Tool  —  KRY / RAM")
+        self.title("STAC Asset-Deleting-Tool  —  KRY / RAM")
         self.minsize(920, 720)
 
         self._dark: bool = True
@@ -286,8 +286,24 @@ class KryDeleteApp(tk.Tk):
         self._asset_selection:     Dict[str, Dict[str, tk.BooleanVar]] = {}
         self._asset_status_labels: Dict[str, Dict[str, tk.Label]]      = {}
 
+        self._file_logger = self._setup_file_logger()
         self._build_ui()
         self._apply_theme(True)
+
+    # ── File-Logger Setup ─────────────────────────────────────────────────────
+
+    def _setup_file_logger(self) -> logging.Logger:
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        log_file = log_dir / f"stac_delete_{datetime.now().strftime('%Y-%m-%d')}.log"
+        logger = logging.getLogger("stac_delete_file")
+        logger.setLevel(logging.DEBUG)
+        if not logger.handlers:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+            logger.addHandler(fh)
+        return logger
 
     # ── UI aufbauen ───────────────────────────────────────────────────────────
 
@@ -1093,26 +1109,38 @@ class KryDeleteApp(tk.Tk):
         total     = sum(len(v) for v in selected_items.values())
         ts        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        env = self._env_var.get()
         self._log_write(f"\n{'='*60}\n[{ts}] LÖSCHUNG GESTARTET\n{'='*60}\n")
-        self._log_write(f"Umgebung:   {self._env_var.get()}\n")
+        self._log_write(f"Umgebung:   {env}\n")
         self._log_write(f"Collection: {COLLECTION_ID}\n")
         self._log_write(f"Items: {len(selected_items)}  |  Assets: {total}\n\n")
+        self._file_logger.info("=" * 60)
+        self._file_logger.info(
+            f"[START] Umgebung: {env} | Collection: {COLLECTION_ID} | "
+            f"Items: {len(selected_items)} | Assets: {total}")
 
         for iid, asset_keys in selected_items.items():
             self._log_write(f"Item: {iid}  ({len(asset_keys)} Assets)\n")
             for ak in asset_keys:
+                http_code = 0
                 try:
-                    success = delete_asset(self._base_url, self._auth, iid, ak)
+                    success, http_code = delete_asset(self._base_url, self._auth, iid, ak)
                 except Exception as exc:
                     success = False
                     self._log_write(f"  [FEHLER] {ak}: {exc}\n")
+                    self._file_logger.error(
+                        f"[FEHLER] {env}/{iid}/{ak}  →  Exception: {exc}")
 
                 if success:
                     ok_list.append(f"{iid}/{ak}")
-                    self._log_write(f"  [OK]   gelöscht: {ak}\n")
+                    self._log_write(f"  [OK]   gelöscht: {ak}  (HTTP {http_code})\n")
+                    self._file_logger.info(
+                        f"[OK]    {env}/{iid}/{ak}  →  HTTP {http_code}")
                 else:
                     fail_list.append(f"{iid}/{ak}")
-                    self._log_write(f"  [FAIL] nicht gelöscht: {ak}\n")
+                    self._log_write(f"  [FAIL] nicht gelöscht: {ak}  (HTTP {http_code})\n")
+                    self._file_logger.warning(
+                        f"[FAIL]  {env}/{iid}/{ak}  →  HTTP {http_code}")
 
                 done += 1
                 self.after(0, lambda d=done: self._progress.configure(value=d))
@@ -1125,6 +1153,9 @@ class KryDeleteApp(tk.Tk):
             for f in fail_list:
                 self._log_write(f"    - {f}\n")
         self._log_write(f"{'='*60}\n")
+        self._file_logger.info(
+            f"[END]   Erfolgreich: {len(ok_list)} | Fehlgeschlagen: {len(fail_list)}")
+        self._file_logger.info("=" * 60)
 
         self.after(0, lambda: self._status_lbl.configure(
             text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"

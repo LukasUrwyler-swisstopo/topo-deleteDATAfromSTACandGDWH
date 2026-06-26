@@ -8,6 +8,13 @@ Nach der Löschung kann ein korrektes Asset problemlos neu importiert werden.
 
 ---
 
+## GUI
+
+<img width="1366" height="1401" alt="grafik" src="https://github.com/user-attachments/assets/457b8f87-1c4e-4429-91a3-692580a4ac0b" />
+
+
+---
+
 ## Voraussetzungen
 
 - Python 3.6+
