@@ -38,7 +38,7 @@ from gdwh_api import (
     GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
     gdwh_get_imports, gdwh_delete_import,
     gdwh_import_id, gdwh_import_date,
-    gdwh_import_footprint_bbox, gdwh_estimate_area,
+    gdwh_import_footprint_bbox,
     gdwh_scan_bucket, gdwh_match_folder, gdwh_bucket_path,
 )
 
@@ -1625,14 +1625,8 @@ class KryDeleteApp(tk.Tk):
                 m = re.search(r"\b(20\d{2})\b", pkg_date)
                 year = m.group(1) if m else ""
 
-            # AREA: aus Bucket oder geschätzt aus Footprint
-            if not area:
-                area = gdwh_estimate_area(imp)
-                area_color = T["hint"]
-                area_suffix = " (geschätzt)" if area else ""
-            else:
-                area_color = T["accent"]
-                area_suffix = ""
+            area_color  = T["accent"] if area else T["fg_dim"]
+            area_suffix = ""
 
             var = tk.BooleanVar(value=False)
             var.trace_add("write", lambda *_: self._gdwh_on_checkbox_change())

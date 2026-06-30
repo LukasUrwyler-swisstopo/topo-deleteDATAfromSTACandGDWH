@@ -10,10 +10,6 @@ import requests
 from urllib.parse import urljoin
 from typing import Dict, List, Optional, Tuple
 
-try:
-    from gdwh_api import _AOI_CENTROIDS as _STAC_AOI_CENTROIDS
-except ImportError:
-    _STAC_AOI_CENTROIDS = {}
 
 # Firmenproxy für externe Verbindungen (data.geo.admin.ch / sys-data.int.bgdi.ch)
 _PROXY = {
@@ -148,26 +144,12 @@ def stac_item_year(item: Dict) -> str:
 
 
 def stac_item_area(item: Dict) -> str:
-    """Schätzt den AOI-Namen aus Properties oder Geometrie-Schwerpunkt.
-    Sucht zuerst in properties, dann via WGS84-Schwerpunkt → nächste LV95-AOI."""
+    """Gibt den AOI-Namen zurück, nur wenn er explizit in den Item-Properties steht."""
     props = item.get("properties", {})
     for key in ("area", "aoi", "area_name", "region"):
         val = str(props.get(key, "")).strip()
         if val:
             return val.upper()
-    bbox = item.get("bbox")
-    if bbox and len(bbox) >= 4 and _STAC_AOI_CENTROIDS:
-        lon_c = (bbox[0] + bbox[2]) / 2
-        lat_c = (bbox[1] + bbox[3]) / 2
-        # Näherung WGS84 → LV95 (ausreichend für AOI-Suche)
-        e_lv95 = 2_600_000 + (lon_c - 7.44) * 74_000
-        n_lv95 = 1_200_000 + (lat_c - 46.95) * 111_000
-        best, best_d = "", float("inf")
-        for name, (ax, ay) in _STAC_AOI_CENTROIDS.items():
-            d = (e_lv95 - ax) ** 2 + (n_lv95 - ay) ** 2
-            if d < best_d:
-                best_d, best = d, name
-        return best
     return ""
 
 
