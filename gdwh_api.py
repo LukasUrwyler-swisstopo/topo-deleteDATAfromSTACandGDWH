@@ -11,21 +11,55 @@ Endpunkte:
 Swagger (INT): https://ltgdwhi.adr.admin.ch/gdwh-api/v2/swagger/index.html
 """
 
+import json
+import os
 import subprocess
 import sys
 import requests
 import urllib3
 from typing import Dict, List
 
+
+def _pip_install(pkg: str) -> bool:
+    """Installiert ein Paket via pip. Versucht zuerst mit Proxy aus proxy_config.json,
+    dann ohne Proxy, jeweils mit und ohne --user. Gibt True bei Erfolg zurück."""
+    config_path = os.path.join(os.path.dirname(__file__), "secrets", "proxy_config.json")
+    proxies = []
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+            proxies = [p["url"] for p in cfg.get("proxies", []) if p.get("enabled") and p.get("url")]
+        except Exception:
+            pass
+
+    trusted = ["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org"]
+    attempts = []
+    for proxy in proxies:
+        attempts.append([sys.executable, "-m", "pip", "install", "--user", pkg,
+                         "--proxy", proxy] + trusted)
+    attempts.append([sys.executable, "-m", "pip", "install", "--user", pkg] + trusted)
+
+    for cmd in attempts:
+        try:
+            subprocess.check_call(cmd)
+            return True
+        except subprocess.CalledProcessError:
+            continue
+    return False
+
+
 try:
     from requests_negotiate_sspi import HttpNegotiateAuth
 except ImportError:
-    _pkg = "requests-negotiate-sspi"
-    # Zuerst systemweit, bei Rechteproblem mit --user als Fallback
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", _pkg])
-    except subprocess.CalledProcessError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", _pkg])
+    print("Installiere requests-negotiate-sspi ...")
+    if not _pip_install("requests-negotiate-sspi"):
+        raise RuntimeError(
+            "Installation von requests-negotiate-sspi fehlgeschlagen.\n"
+            "Bitte manuell installieren:\n"
+            f"  python -m pip install --user requests-negotiate-sspi "
+            f"--proxy http://proxy-bvcol.admin.ch:8080"
+        )
     from requests_negotiate_sspi import HttpNegotiateAuth
 
 # Interne Firmen-CA nicht im Python-Truststore → Verifikation deaktivieren.
