@@ -75,6 +75,23 @@ except ImportError:
 GDWH_SSL_VERIFY: bool = False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+
+_GDWH_PROXY = {
+    "http":  "http://proxy-bvcol.admin.ch:8080",
+    "https": "http://proxy-bvcol.admin.ch:8080",
+}
+
+
+def _gdwh_session() -> requests.Session:
+    """Session mit frischer SSPI-Auth und explizitem Firmen-Proxy.
+    Frische HttpNegotiateAuth-Instanz verhindert State-Carryover zwischen INT und PROD.
+    requests.Session() hält die TCP-Verbindung für den mehrstufigen SSPI-Handshake."""
+    s = requests.Session()
+    s.auth    = HttpNegotiateAuth()
+    s.verify  = GDWH_SSL_VERIFY
+    s.proxies = _GDWH_PROXY
+    return s
+
 GDWH_GDS_KEYS = [
     "SB_DOP",
     "SB_DOP_16",
@@ -87,13 +104,11 @@ GDWH_ENVIRONMENTS = {
     "PROD": "https://ltgdwh.adr.admin.ch/gdwh-api/v2/",
 }
 
-_AUTH = HttpNegotiateAuth()
-
-
 def gdwh_get_imports(base_url: str, gds_key: str) -> List[Dict]:
     """Holt alle DataPackages (Imports) für einen GDS-Key."""
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports"
-    r = requests.get(url, auth=_AUTH, timeout=(30, 60), verify=GDWH_SSL_VERIFY)
+    with _gdwh_session() as s:
+        r = s.get(url, timeout=(30, 60))
     r.raise_for_status()
     data = r.json()
     if isinstance(data, list):
@@ -113,8 +128,8 @@ def gdwh_delete_import(base_url: str, gds_key: str,
     """
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports/{datapackage_id}"
     params = {"email": email} if email else None
-    r = requests.delete(url, auth=_AUTH, params=params,
-                        timeout=(30, 120), verify=GDWH_SSL_VERIFY)
+    with _gdwh_session() as s:
+        r = s.delete(url, params=params, timeout=(30, 120))
     r.raise_for_status()
     try:
         return r.json()
