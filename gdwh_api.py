@@ -20,9 +20,12 @@ import urllib3
 from typing import Dict, List
 
 
+_FALLBACK_PROXY = "http://proxy-bvcol.admin.ch:8080"
+
+
 def _pip_install(pkg: str) -> bool:
-    """Installiert ein Paket via pip. Versucht zuerst mit Proxy aus proxy_config.json,
-    dann ohne Proxy, jeweils mit und ohne --user. Gibt True bei Erfolg zurück."""
+    """Installiert ein Paket via pip. Versucht zuerst Proxies aus proxy_config.json,
+    dann den Firmen-Fallback-Proxy, zuletzt ohne Proxy. Gibt True bei Erfolg zurück."""
     config_path = os.path.join(os.path.dirname(__file__), "secrets", "proxy_config.json")
     proxies = []
     if os.path.exists(config_path):
@@ -32,6 +35,8 @@ def _pip_install(pkg: str) -> bool:
             proxies = [p["url"] for p in cfg.get("proxies", []) if p.get("enabled") and p.get("url")]
         except Exception:
             pass
+    if _FALLBACK_PROXY not in proxies:
+        proxies.append(_FALLBACK_PROXY)
 
     trusted = ["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org"]
     attempts = []

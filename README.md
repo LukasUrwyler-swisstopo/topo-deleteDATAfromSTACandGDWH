@@ -12,10 +12,14 @@ GUI-Tool zum gezielten Löschen von Daten aus:
 ## Voraussetzungen
 
 - Python 3.6+
-- Paket: `requests` (tkinter ist in der Standardbibliothek enthalten)
+- Pakete: `requests`, `requests-negotiate-sspi` (tkinter ist in der Standardbibliothek enthalten)
 
-```bash
-pip install requests
+Das Script versucht beim Start fehlende Pakete **automatisch** über den Firmenproxy zu installieren.
+
+Falls die automatische Installation fehlschlägt, manuell ausführen:
+
+```cmd
+python -m pip install --user requests-negotiate-sspi --proxy http://proxy-bvcol.admin.ch:8080 --trusted-host pypi.org --trusted-host files.pythonhosted.org
 ```
 
 ---
