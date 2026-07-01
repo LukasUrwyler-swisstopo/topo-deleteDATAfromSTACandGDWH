@@ -5,6 +5,11 @@ GUI-Tool zum gezielten Löschen von Daten aus:
 - **Tab 1 — STAC**: Assets (und bei Bedarf leere Items) aus der Collection `ch.swisstopo.spezialbefliegungen`
 - **Tab 2 — GDWH**: DataPackage-Imports aus dem Geodata-Warehouse (`ltgdwhi` / `ltgdwh`)
 
+## GUI
+
+<img width="958" height="1027" alt="grafik" src="https://github.com/user-attachments/assets/618f4c2e-ab3b-4285-a292-49123efd2ca8" />
+
+
 **Hintergrund:** Die Pipeline läuft GDWH → automatisierter STAC-Upload. Beim Re-Import müssen beide Systeme bereinigt werden.
 
 ---
