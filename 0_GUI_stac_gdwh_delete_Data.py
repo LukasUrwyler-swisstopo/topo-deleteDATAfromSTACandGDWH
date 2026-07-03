@@ -333,6 +333,9 @@ class KryDeleteApp(tk.Tk):
     _CHK_OFF     = "○"
     _CHK_PARTIAL = "◐"
 
+    _LOAD_BTN_LABEL = "ITEM-Liste laden"
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     def __init__(self):
         super().__init__()
         self.title("STAC / GDWH Deleting-Tool  —  ch.swisstopo.spezialbefliegungen")
@@ -351,6 +354,10 @@ class KryDeleteApp(tk.Tk):
         # Auswahl zum Löschen je Asset-Knoten (tree_iid → bool). Default = False
         # (bewusstes Opt-in, anders als beim read-only Monitor-Tool).
         self._checked: Dict[str, bool] = {}
+
+        # Lade-Spinner im "ITEM-Liste laden"-Button
+        self._spinner_job: Optional[str] = None
+        self._spinner_idx: int = 0
 
         # GDWH State
         self._gdwh_base_url: str = GDWH_ENVIRONMENTS["INT"]
@@ -575,7 +582,7 @@ class KryDeleteApp(tk.Tk):
         row.pack(fill="x", pady=(0, 6))
 
         self._load_btn = ttk.Button(
-            row, text="Laden", command=self._load, state="disabled",
+            row, text=self._LOAD_BTN_LABEL, command=self._load, state="disabled",
             style="AmberBold.TButton")
         self._load_btn.pack(side="left", padx=(0, 16))
 
@@ -1131,7 +1138,7 @@ class KryDeleteApp(tk.Tk):
                     "(Kann bei 5000+ Items mehrere Minuten dauern.)"):
                 return
         self._load_btn.configure(style="TButton")
-        self._disable_search_btns()
+        self._set_busy(True)
         self._del_btn.config(state="disabled")
         self._apply_theme(self._dark)
         self._clear_tree()
@@ -1167,7 +1174,6 @@ class KryDeleteApp(tk.Tk):
             if not filtered:
                 self.after(0, lambda: self._preview_lbl.configure(
                     text="Keine Items gefunden."))
-                self.after(0, self._enable_search_btns)
                 return
 
             hrefs_map: Dict[str, Dict[str, str]] = {}
@@ -1190,7 +1196,8 @@ class KryDeleteApp(tk.Tk):
         except Exception as exc:
             self._log_write(f"[FEHLER] {exc}\n")
             self.after(0, lambda: messagebox.showerror("Fehler", str(exc)))
-            self.after(0, self._enable_search_btns)
+        finally:
+            self.after(0, lambda: self._set_busy(False))
 
     # ── STAC Filterung ────────────────────────────────────────────────────────
 
@@ -2058,6 +2065,30 @@ class KryDeleteApp(tk.Tk):
 
     def _enable_search_btns(self):
         self._load_btn.config(state="normal")
+
+    def _set_busy(self, busy: bool):
+        state = "disabled" if busy else ("normal" if self._auth else "disabled")
+        self._load_btn.config(state=state)
+        if busy:
+            self._start_load_spinner()
+        else:
+            self._stop_load_spinner()
+
+    def _start_load_spinner(self):
+        self._spinner_idx = 0
+        self._animate_load_spinner()
+
+    def _animate_load_spinner(self):
+        frame = self._SPINNER_FRAMES[self._spinner_idx % len(self._SPINNER_FRAMES)]
+        self._load_btn.config(text=f"{frame}  Lade Items …")
+        self._spinner_idx += 1
+        self._spinner_job = self.after(120, self._animate_load_spinner)
+
+    def _stop_load_spinner(self):
+        if self._spinner_job is not None:
+            self.after_cancel(self._spinner_job)
+            self._spinner_job = None
+        self._load_btn.config(text=self._LOAD_BTN_LABEL)
 
     def _log_write(self, text: str):
         def _do():
