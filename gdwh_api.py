@@ -352,89 +352,41 @@ def gdwh_scan_bucket(env: str, gds_key: str, log_fn=None) -> List[Dict]:
 
 
 def gdwh_match_folder(imp: Dict, bucket_entries: List[Dict],
-                       max_diff_hours: float = 12.0) -> Optional[Dict]:
+                       max_diff_hours: float = 12.0,
+                       ambiguity_margin_hours: float = 1.0) -> Optional[Dict]:
     """
     Ordnet einem GDWH-Import den zeitlich nächstliegenden Bucket-Ordner zu.
-    Gibt None zurück wenn der beste Match mehr als max_diff_hours entfernt liegt.
+
+    Das GDWH-Import-Objekt enthält kein Feld, das direkt auf den Bucket-Ordner
+    verweist (kein sourceFolder/sourcePath/batchId o.ä.) – der Abgleich läuft
+    daher zwangsläufig über die Nähe von Import-Zeitpunkt zu Ordner-mtime und
+    bleibt eine Heuristik, kein verlässlicher Fremdschlüssel.
+
+    Um zu vermeiden, dass bei mehreren zeitlich nah beieinanderliegenden
+    Ordnern (z.B. Batch-Importe) ein falscher Ordner als vermeintlich sicherer
+    Treffer angezeigt wird, gilt ein Match nur dann als eindeutig, wenn der
+    zweitnächste Ordner um mindestens ambiguity_margin_hours weiter entfernt
+    liegt als der nächste. Andernfalls (oder wenn kein Ordner innerhalb von
+    max_diff_hours liegt) wird None zurückgegeben – lieber keine Metadaten
+    anzeigen als falsche.
     """
     import_dt = _parse_iso_dt(imp.get("importDate", ""))
     if import_dt is None or not bucket_entries:
         return None
-    best, best_secs = None, float("inf")
-    for entry in bucket_entries:
-        if entry["mtime"] is None:
-            continue
-        diff = abs((import_dt - entry["mtime"]).total_seconds())
-        if diff < best_secs:
-            best_secs = diff
-            best = entry
-    return best if best_secs <= max_diff_hours * 3600 else None
-
-
-# ─── AOI-Schätztabelle (Zentroide in LV95, EPSG:2056) ────────────────────────
-# Approximate centroids for known Spezialbefliegungen AOIs.
-# Ergänzen wenn neue AOIs hinzukommen.
-_AOI_CENTROIDS: Dict[str, tuple] = {
-    "A_NEUVE":                  (2567500, 1085500),
-    "AERLENGLETSCHER":          (2651000, 1175000),
-    "ALETSCH_MOOSFLUE":         (2644000, 1140000),
-    "BIS_HOHLICHT_TURTMANN":    (2614000, 1115000),
-    "CENGALO":                  (2771000, 1122000),
-    "CORVATSCH":                (2776000, 1146000),
-    "DIABLONS":                 (2611000, 1111000),
-    "FEE_OST":                  (2636000, 1105000),
-    "FINDEL":                   (2619000, 1098000),
-    "FINSTERAAR":               (2647000, 1158000),
-    "GORNER":                   (2621000, 1094000),
-    "GRAECHEN":                 (2634000, 1111000),
-    "GRIES":                    (2666000, 1140000),
-    "GROSSER_ALETSCH_SUED":     (2638000, 1135000),
-    "GRUEEBU_SAAS":             (2637000, 1107000),
-    "HOHBERG":                  (2683000, 1168000),
-    "JEGIHORN":                 (2632000, 1106000),
-    "LAUTERAAR":                (2656000, 1164000),
-    "LONA":                     (2613000, 1127000),
-    "MONT_ETOILE":              (2609000, 1125000),
-    "MONTE_PROSA":              (2686000, 1154000),
-    "OBERAAR":                  (2657000, 1160000),
-    "OBERER_GRINDELWALD":       (2654000, 1172000),
-    "PERROC":                   (2598000, 1105000),
-    "PINCABELLA_&_LARGARIO":    (2715000, 1118000),
-    "PLAINE_MORTE":             (2611000, 1139000),
-    "RANDA":                    (2626000, 1105000),
-    "RHONE":                    (2671000, 1155000),
-    "RIENZENSTOCK":             (2713000, 1198000),
-    "SCHAFBERG_MURAGL":         (2787000, 1154000),
-    "SILVRETTA":                (2791000, 1191000),
-    "SUVRETTA":                 (2779000, 1155000),
-    "TRIFT":                    (2665000, 1177000),
-    "UNTERAAR":                 (2653000, 1162000),
-    "UNTERER_GRINDELWALD":      (2648000, 1170000),
-    "WEISSMIES":                (2641000, 1111000),
-}
-
-
-def gdwh_estimate_area(imp: Dict) -> str:
-    """Schätzt die AREA anhand des Footprint-Zentroiden (nächster AOI in LV95).
-    Gibt einen String der Form 'OBERAAR (geschätzt)' zurück, oder '' wenn kein Footprint."""
-    wkt = imp.get("footprint", "")
-    if not wkt:
-        return ""
-    try:
-        coords = re.findall(r"([\d.]+)\s+([\d.]+)", wkt)
-        if not coords:
-            return ""
-        cx = sum(float(x) for x, _ in coords) / len(coords)
-        cy = sum(float(y) for _, y in coords) / len(coords)
-        best_name, best_dist = "", float("inf")
-        for name, (ax, ay) in _AOI_CENTROIDS.items():
-            dist = (cx - ax) ** 2 + (cy - ay) ** 2
-            if dist < best_dist:
-                best_dist = dist
-                best_name = name
-        return f"{best_name} (geschätzt)" if best_name else ""
-    except Exception:
-        return ""
+    timed = sorted(
+        (abs((import_dt - entry["mtime"]).total_seconds()), entry)
+        for entry in bucket_entries if entry["mtime"] is not None
+    )
+    if not timed:
+        return None
+    best_secs, best = timed[0]
+    if best_secs > max_diff_hours * 3600:
+        return None
+    if len(timed) > 1:
+        second_secs, _ = timed[1]
+        if (second_secs - best_secs) < ambiguity_margin_hours * 3600:
+            return None
+    return best
 
 
 def gdwh_import_footprint_bbox(imp: Dict) -> str:

@@ -32,7 +32,7 @@ from datetime import datetime
 
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
-    get_item_direct, get_collection_items, filter_items,
+    get_item_direct, get_collection_items,
     delete_asset, delete_item, check_asset_info, asset_area, browser_url,
     stac_item_year, stac_item_area, stac_item_acq_date,
 )
@@ -139,23 +139,34 @@ def _status_label(sc: Optional[int]) -> Tuple[str, str]:
 
 # ─── Bestätigungs-Dialog (STAC) ───────────────────────────────────────────────
 
-class ConfirmDialog(tk.Toplevel):
-    def __init__(self, parent, environment: str, item_count: int,
-                 asset_count: int, items_fully_deleted: int, dark: bool):
+class _BaseConfirmDialog(tk.Toplevel):
+    """Gemeinsame Basis für die Löschbestätigungs-Dialoge (STAC & GDWH).
+
+    Unterklassen liefern Titel und Info-Text über _title()/_info_text();
+    Aufbau, Bestätigungs-Checkbox/-Eingabe und Zustandslogik sind identisch.
+    """
+
+    def __init__(self, parent, environment: str, dark: bool):
         super().__init__(parent)
         self.result       = False
         self._environment = environment
         T = DARK if dark else LIGHT
-        self.title("Löschung bestätigen")
+        self.title(self._title())
         self.resizable(False, False)
         self.configure(bg=T["root"])
         self.grab_set()
         self.focus_set()
-        self._build(T, environment, item_count, asset_count, items_fully_deleted)
+        self._build(T, environment)
         self.transient(parent)
         self.wait_window(self)
 
-    def _build(self, T, env, items, assets, items_fully_deleted):
+    def _title(self) -> str:
+        raise NotImplementedError
+
+    def _info_text(self, env: str) -> str:
+        raise NotImplementedError
+
+    def _build(self, T, env):
         hdr = tk.Frame(self, bg=T["err"], pady=6)
         hdr.pack(fill="x")
         tk.Label(hdr, text="  WARNUNG – DIESE AKTION IST NICHT UMKEHRBAR  ",
@@ -164,159 +175,106 @@ class ConfirmDialog(tk.Toplevel):
         body = tk.Frame(self, bg=T["root"], padx=20, pady=10)
         body.pack(fill="both")
 
-        if items_fully_deleted > 0:
+        tk.Label(body, text=self._info_text(env), bg=T["root"], fg=T["fg"],
+                 font=("Segoe UI", 10), justify="left").pack(anchor="w", pady=(6, 10))
+
+        tk.Frame(body, bg=T["sep"], height=1).pack(fill="x", pady=6)
+
+        self._check_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            body,
+            text="Ich verstehe, dass die Daten permanent und unwiderruflich gelöscht werden.",
+            variable=self._check_var, command=self._update_state,
+            bg=T["root"], fg=T["fg"], selectcolor=T["input"],
+            activebackground=T["root"], activeforeground=T["fg"],
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=4)
+
+        tk.Label(body, text=f'\nZur Bestätigung den Umgebungsnamen tippen ("{env}"):',
+                 bg=T["root"], fg=T["hint"],
+                 font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=4)
+
+        self._env_var   = tk.StringVar()
+        self._env_entry = tk.Entry(
+            body, textvariable=self._env_var, width=16, state="disabled",
+            bg=T["input"], fg=T["fg"], insertbackground=T["fg"],
+            disabledbackground=T["sep"], disabledforeground=T["fg_dim"],
+            font=("Segoe UI", 10),
+        )
+        self._env_entry.pack(anchor="w", padx=4, pady=(3, 12))
+        self._env_var.trace_add("write", lambda *_: self._update_state())
+
+        btn_row = tk.Frame(body, bg=T["root"])
+        btn_row.pack(fill="x", pady=(4, 6))
+        tk.Button(btn_row, text="Abbrechen",
+                  bg=T["btn"], fg=T["fg"], activebackground=T["btn_hover"],
+                  activeforeground=T["fg"], font=("Segoe UI", 10), relief="flat",
+                  padx=14, pady=6, command=self.destroy).pack(side="right", padx=(8, 0))
+        self._ok_btn = tk.Button(
+            btn_row, text="JETZT LÖSCHEN",
+            bg=T["err"], fg="#ffffff", activebackground="#b71c1c",
+            activeforeground="#ffffff", font=("Segoe UI", 10, "bold"),
+            relief="flat", padx=14, pady=6, state="disabled", command=self._confirm,
+        )
+        self._ok_btn.pack(side="right")
+
+    def _update_state(self):
+        checked = self._check_var.get()
+        self._env_entry.config(state="normal" if checked else "disabled")
+        env_ok = self._env_var.get().strip().upper() == self._environment.upper()
+        self._ok_btn.config(state="normal" if (checked and env_ok) else "disabled")
+
+    def _confirm(self):
+        self.result = True
+        self.destroy()
+
+
+class ConfirmDialog(_BaseConfirmDialog):
+    def __init__(self, parent, environment: str, item_count: int,
+                 asset_count: int, items_fully_deleted: int, dark: bool):
+        self._item_count          = item_count
+        self._asset_count         = asset_count
+        self._items_fully_deleted = items_fully_deleted
+        super().__init__(parent, environment, dark)
+
+    def _title(self) -> str:
+        return "Löschung bestätigen"
+
+    def _info_text(self, env: str) -> str:
+        if self._items_fully_deleted > 0:
             item_note = (
-                f"davon {items_fully_deleted} Item(s) vollständig leer →\n"
+                f"davon {self._items_fully_deleted} Item(s) vollständig leer →\n"
                 "  werden ebenfalls gelöscht. Restliche Items bleiben erhalten."
             )
         else:
             item_note = "Die Items selbst bleiben erhalten."
-
-        info = (f"Umgebung:              {env}\n"
+        return (f"Umgebung:              {env}\n"
                 f"Collection:            {COLLECTION_ID}\n"
-                f"Betroffene Items:      {items}\n"
-                f"Assets zum Löschen:   {assets}\n\n"
+                f"Betroffene Items:      {self._item_count}\n"
+                f"Assets zum Löschen:   {self._asset_count}\n\n"
                 f"{item_note}\n"
                 "Assets werden permanent gelöscht.")
-        tk.Label(body, text=info, bg=T["root"], fg=T["fg"],
-                 font=("Segoe UI", 10), justify="left").pack(anchor="w", pady=(6, 10))
-
-        tk.Frame(body, bg=T["sep"], height=1).pack(fill="x", pady=6)
-
-        self._check_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            body,
-            text="Ich verstehe, dass die Assets permanent und unwiderruflich gelöscht werden.",
-            variable=self._check_var, command=self._update_state,
-            bg=T["root"], fg=T["fg"], selectcolor=T["input"],
-            activebackground=T["root"], activeforeground=T["fg"],
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=4)
-
-        tk.Label(body, text=f'\nZur Bestätigung den Umgebungsnamen tippen ("{env}"):',
-                 bg=T["root"], fg=T["hint"],
-                 font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=4)
-
-        self._env_var   = tk.StringVar()
-        self._env_entry = tk.Entry(
-            body, textvariable=self._env_var, width=16, state="disabled",
-            bg=T["input"], fg=T["fg"], insertbackground=T["fg"],
-            disabledbackground=T["sep"], disabledforeground=T["fg_dim"],
-            font=("Segoe UI", 10),
-        )
-        self._env_entry.pack(anchor="w", padx=4, pady=(3, 12))
-        self._env_var.trace_add("write", lambda *_: self._update_state())
-
-        btn_row = tk.Frame(body, bg=T["root"])
-        btn_row.pack(fill="x", pady=(4, 6))
-        tk.Button(btn_row, text="Abbrechen",
-                  bg=T["btn"], fg=T["fg"], activebackground=T["btn_hover"],
-                  activeforeground=T["fg"], font=("Segoe UI", 10), relief="flat",
-                  padx=14, pady=6, command=self.destroy).pack(side="right", padx=(8, 0))
-        self._ok_btn = tk.Button(
-            btn_row, text="JETZT LÖSCHEN",
-            bg=T["err"], fg="#ffffff", activebackground="#b71c1c",
-            activeforeground="#ffffff", font=("Segoe UI", 10, "bold"),
-            relief="flat", padx=14, pady=6, state="disabled", command=self._confirm,
-        )
-        self._ok_btn.pack(side="right")
-
-    def _update_state(self):
-        checked = self._check_var.get()
-        self._env_entry.config(state="normal" if checked else "disabled")
-        env_ok = self._env_var.get().strip().upper() == self._environment.upper()
-        self._ok_btn.config(state="normal" if (checked and env_ok) else "disabled")
-
-    def _confirm(self):
-        self.result = True
-        self.destroy()
 
 
 # ─── Bestätigungs-Dialog (GDWH) ──────────────────────────────────────────────
 
-class GDWHConfirmDialog(tk.Toplevel):
+class GDWHConfirmDialog(_BaseConfirmDialog):
     def __init__(self, parent, environment: str, gds_key: str,
                  pkg_count: int, dark: bool):
-        super().__init__(parent)
-        self.result       = False
-        self._environment = environment
-        T = DARK if dark else LIGHT
-        self.title("GDWH Löschung bestätigen")
-        self.resizable(False, False)
-        self.configure(bg=T["root"])
-        self.grab_set()
-        self.focus_set()
-        self._build(T, environment, gds_key, pkg_count)
-        self.transient(parent)
-        self.wait_window(self)
+        self._gds_key   = gds_key
+        self._pkg_count = pkg_count
+        super().__init__(parent, environment, dark)
 
-    def _build(self, T, env, gds_key, pkg_count):
-        hdr = tk.Frame(self, bg=T["err"], pady=6)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="  WARNUNG – DIESE AKTION IST NICHT UMKEHRBAR  ",
-                 bg=T["err"], fg="#ffffff", font=("Segoe UI", 11, "bold")).pack()
+    def _title(self) -> str:
+        return "GDWH Löschung bestätigen"
 
-        body = tk.Frame(self, bg=T["root"], padx=20, pady=10)
-        body.pack(fill="both")
-
-        info = (f"Umgebung:                    {env}\n"
-                f"GDS-Key:                     {gds_key}\n"
-                f"DataPackages zum Löschen:   {pkg_count}\n\n"
+    def _info_text(self, env: str) -> str:
+        return (f"Umgebung:                    {env}\n"
+                f"GDS-Key:                     {self._gds_key}\n"
+                f"DataPackages zum Löschen:   {self._pkg_count}\n\n"
                 "Alle Daten der ausgewählten DataPackages\n"
                 "werden permanent und unwiderruflich gelöscht.\n"
                 "Die Löschung im GDWH ist asynchron (Job wird gestartet).")
-        tk.Label(body, text=info, bg=T["root"], fg=T["fg"],
-                 font=("Segoe UI", 10), justify="left").pack(anchor="w", pady=(6, 10))
-
-        tk.Frame(body, bg=T["sep"], height=1).pack(fill="x", pady=6)
-
-        self._check_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            body,
-            text="Ich verstehe, dass die Daten permanent gelöscht werden.",
-            variable=self._check_var, command=self._update_state,
-            bg=T["root"], fg=T["fg"], selectcolor=T["input"],
-            activebackground=T["root"], activeforeground=T["fg"],
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=4)
-
-        tk.Label(body, text=f'\nZur Bestätigung den Umgebungsnamen tippen ("{env}"):',
-                 bg=T["root"], fg=T["hint"],
-                 font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=4)
-
-        self._env_var   = tk.StringVar()
-        self._env_entry = tk.Entry(
-            body, textvariable=self._env_var, width=16, state="disabled",
-            bg=T["input"], fg=T["fg"], insertbackground=T["fg"],
-            disabledbackground=T["sep"], disabledforeground=T["fg_dim"],
-            font=("Segoe UI", 10),
-        )
-        self._env_entry.pack(anchor="w", padx=4, pady=(3, 12))
-        self._env_var.trace_add("write", lambda *_: self._update_state())
-
-        btn_row = tk.Frame(body, bg=T["root"])
-        btn_row.pack(fill="x", pady=(4, 6))
-        tk.Button(btn_row, text="Abbrechen",
-                  bg=T["btn"], fg=T["fg"], activebackground=T["btn_hover"],
-                  activeforeground=T["fg"], font=("Segoe UI", 10), relief="flat",
-                  padx=14, pady=6, command=self.destroy).pack(side="right", padx=(8, 0))
-        self._ok_btn = tk.Button(
-            btn_row, text="JETZT LÖSCHEN",
-            bg=T["err"], fg="#ffffff", activebackground="#b71c1c",
-            activeforeground="#ffffff", font=("Segoe UI", 10, "bold"),
-            relief="flat", padx=14, pady=6, state="disabled", command=self._confirm,
-        )
-        self._ok_btn.pack(side="right")
-
-    def _update_state(self):
-        checked = self._check_var.get()
-        self._env_entry.config(state="normal" if checked else "disabled")
-        env_ok = self._env_var.get().strip().upper() == self._environment.upper()
-        self._ok_btn.config(state="normal" if (checked and env_ok) else "disabled")
-
-    def _confirm(self):
-        self.result = True
-        self.destroy()
 
 
 # ─── Haupt-GUI ────────────────────────────────────────────────────────────────
@@ -488,10 +446,12 @@ class KryDeleteApp(tk.Tk):
 
         ttk.Label(sec, text="Umgebung:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._env_var = tk.StringVar(value="INT")
+        self._env_radios: List[ttk.Radiobutton] = []
         for col, env in enumerate(("INT", "PROD"), 1):
-            ttk.Radiobutton(sec, text=env, variable=self._env_var, value=env,
-                            command=self._on_env_change).grid(
-                row=0, column=col, sticky="w", padx=4)
+            rb = ttk.Radiobutton(sec, text=env, variable=self._env_var, value=env,
+                                  command=self._on_env_change)
+            rb.grid(row=0, column=col, sticky="w", padx=4)
+            self._env_radios.append(rb)
 
         self._url_lbl = ttk.Label(sec, text=ENVIRONMENTS["INT"],
                                    font=("Segoe UI", 8), style="Dim.TLabel")
@@ -537,11 +497,12 @@ class KryDeleteApp(tk.Tk):
 
         ttk.Label(sec, text="Item-ID:").grid(row=2, column=0, sticky="w",
                                               padx=(0, 8), pady=(6, 0))
-        self._item_id_var = tk.StringVar(value=list(AUFTRAGSTYPEN.values())[0])
+        self._item_id_var = tk.StringVar(value="")
+        self._item_id_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._item_id_var, width=46).grid(
             row=2, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(6, 0))
         ttk.Label(
-            sec, text="Teilstring genügt  (für direkten Abruf: vollständige ID)",
+            sec, text="Teilstring genügt  —  filtert die geladene Liste  —  Leer = alle Items",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
         ).grid(row=2, column=3, sticky="w", pady=(6, 0))
 
@@ -743,10 +704,12 @@ class KryDeleteApp(tk.Tk):
 
         ttk.Label(sec, text="Umgebung:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._gdwh_env_var = tk.StringVar(value="INT")
+        self._gdwh_env_radios: List[ttk.Radiobutton] = []
         for col, env in enumerate(("INT", "PROD"), 1):
-            ttk.Radiobutton(sec, text=env, variable=self._gdwh_env_var, value=env,
-                            command=self._gdwh_on_env_change).grid(
-                row=0, column=col, sticky="w", padx=4)
+            rb = ttk.Radiobutton(sec, text=env, variable=self._gdwh_env_var, value=env,
+                                  command=self._gdwh_on_env_change)
+            rb.grid(row=0, column=col, sticky="w", padx=4)
+            self._gdwh_env_radios.append(rb)
 
         self._gdwh_url_lbl = ttk.Label(sec, text=GDWH_ENVIRONMENTS["INT"],
                                         font=("Segoe UI", 8), style="Dim.TLabel")
@@ -782,6 +745,8 @@ class KryDeleteApp(tk.Tk):
             values=GDWH_GDS_KEYS, state="readonly", width=28,
         )
         self._gdwh_gds_combo.grid(row=1, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
+        self._gdwh_gds_combo.bind(
+            "<<ComboboxSelected>>", self._gdwh_on_gds_key_change)
 
         self._gdwh_fetch_btn = ttk.Button(
             sec, text="Imports laden",
@@ -1089,6 +1054,11 @@ class KryDeleteApp(tk.Tk):
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _on_env_change(self):
+        # Sicherheitskritisch: eine bereits geladene Item/Asset-Liste stammt aus
+        # der VORHER gewählten Umgebung. Sie muss beim Umgebungswechsel sofort
+        # verworfen werden – sonst könnte eine noch angehakte Auswahl aus INT
+        # nach dem Wechsel auf PROD (oder umgekehrt) gelöscht werden, weil
+        # Löschungen stets gegen die AKTUELL gewählte Umgebung laufen.
         env = self._env_var.get()
         self._url_lbl.configure(text=ENVIRONMENTS[env])
         self._auth = None
@@ -1096,15 +1066,18 @@ class KryDeleteApp(tk.Tk):
         self._cred_btn.configure(style="Amber.TButton")
         self._load_btn.config(state="disabled")
         self._load_btn.configure(style="AmberBold.TButton")
-        self._del_btn.config(state="disabled")
+        self._clear_tree()
+        self._clear_state()
+        self._preview_lbl.configure(text="Noch keine Vorschau geladen.")
+        self._del_btn.config(text="Ausgewählte Assets löschen …", state="disabled")
         self._apply_theme(self._dark)
 
     def _on_auftragstyp_change(self):
-        typ     = self._auftragstyp_var.get()
-        suggest = AUFTRAGSTYPEN[typ]
-        known   = set(AUFTRAGSTYPEN.values())
-        if not self._item_id_var.get().strip() or self._item_id_var.get() in known:
-            self._item_id_var.set(suggest)
+        # Auftragstyp ist ein reiner Client-Filter auf der bereits geladenen
+        # Liste – er darf das Item-ID-Suchfeld (Server-Filter beim Laden)
+        # nicht mehr überschreiben, sonst werden andere Auftragstypen nie
+        # geladen und bleiben nach dem Wechsel leer.
+        self._apply_filters()
 
     def _load_credentials(self):
         env = self._env_var.get()
@@ -1130,13 +1103,6 @@ class KryDeleteApp(tk.Tk):
             messagebox.showerror("Credentials-Fehler", str(exc))
 
     def _load(self):
-        search_term = self._item_id_var.get().strip()
-        if not search_term:
-            if not messagebox.askyesno(
-                    "Alle Items laden?",
-                    "Kein Filter eingegeben.\nAlle Items der Collection laden?\n\n"
-                    "(Kann bei 5000+ Items mehrere Minuten dauern.)"):
-                return
         self._load_btn.configure(style="TButton")
         self._set_busy(True)
         self._del_btn.config(state="disabled")
@@ -1144,41 +1110,28 @@ class KryDeleteApp(tk.Tk):
         self._clear_tree()
         self._preview_lbl.configure(text="Lade …")
         self._clear_state()
-        threading.Thread(target=self._load_worker,
-                         args=(search_term,), daemon=True).start()
+        threading.Thread(target=self._load_worker, daemon=True).start()
 
     # ── STAC Worker-Thread ────────────────────────────────────────────────────
 
-    def _load_worker(self, search_term: str):
+    def _load_worker(self):
+        # "Item-Liste laden" holt IMMER die komplette Collection. Auftragstyp,
+        # Jahr, Item-ID, Asset-Key und Dateiendung sind reine Client-Filter,
+        # die erst danach in _apply_filters() auf diese vollständige Liste
+        # angewendet werden – so filtern Änderungen an diesen Feldern sofort
+        # die bereits geladene Liste, statt eine neue (Teil-)Ladung zu verlangen.
         try:
-            if search_term:
-                self._log_write(f"[Abruf] Prüfe exakte Item-ID: {search_term} …\n")
-                item = get_item_direct(self._base_url, self._auth, search_term)
-                if item is not None:
-                    hrefs = {k: v.get("href", "") for k, v in item.get("assets", {}).items()}
-                    self._log_write(
-                        f"[OK] {item['id']}: {len(hrefs)} Asset(s) total (Direct-Lookup)\n")
-                    self._items_preview     = [item]
-                    self._items_asset_hrefs = {item["id"]: hrefs}
-                    self.after(0, self._apply_filters)
-                    return
-                self._log_write(
-                    "[Info] Keine exakte Übereinstimmung – lade gesamte Collection …\n")
-            else:
-                self._log_write("[Abruf] Hole alle Items der Collection …\n")
-
+            self._log_write("[Abruf] Hole alle Items der Collection …\n")
             all_items = get_collection_items(self._base_url, self._auth, self._log_write)
             self._log_write(f"[Abruf] {len(all_items)} Items total.\n")
-            filtered = filter_items(all_items, search_term)
-            self._log_write(f"[Filter ID] '{search_term}': {len(filtered)} Items.\n")
-            if not filtered:
+            if not all_items:
                 self.after(0, lambda: self._preview_lbl.configure(
                     text="Keine Items gefunden."))
                 return
 
             hrefs_map: Dict[str, Dict[str, str]] = {}
             full_items: List[Dict] = []
-            for i, item in enumerate(filtered, 1):
+            for i, item in enumerate(all_items, 1):
                 iid    = item["id"]
                 assets = item.get("assets", {})
                 if not assets:
@@ -1189,7 +1142,7 @@ class KryDeleteApp(tk.Tk):
                 hrefs_map[iid] = {k: v.get("href", "") for k, v in assets.items()}
                 full_items.append(item)
                 self._log_write(
-                    f"  [{i}/{len(filtered)}] {iid}: {len(hrefs_map[iid])} Asset(s)\n")
+                    f"  [{i}/{len(all_items)}] {iid}: {len(hrefs_map[iid])} Asset(s)\n")
             self._items_preview     = full_items
             self._items_asset_hrefs = hrefs_map
             self.after(0, self._apply_filters)
@@ -1213,6 +1166,8 @@ class KryDeleteApp(tk.Tk):
     def _apply_filters(self):
         if not self._items_asset_hrefs:
             return
+        id_filter   = self._item_id_var.get().strip().lower()
+        typ_filter  = AUFTRAGSTYPEN.get(self._auftragstyp_var.get(), "").strip().lower()
         year_filter = self._year_filter_var.get().strip()
         key_filter  = self._asset_filter_var.get().strip().lower()
         extensions  = self._get_active_extensions()
@@ -1230,6 +1185,10 @@ class KryDeleteApp(tk.Tk):
             assets_map[iid] = keys
         self._items_assets = assets_map
         items = self._items_preview
+        if id_filter:
+            items = [it for it in items if id_filter in it["id"].lower()]
+        if typ_filter:
+            items = [it for it in items if typ_filter in it["id"].lower()]
         if year_filter:
             items = [it for it in items if stac_item_year(it) == year_filter]
         self._populate_tree(items, assets_map)
@@ -1556,14 +1515,24 @@ class KryDeleteApp(tk.Tk):
             return
         self._del_btn.config(state="disabled")
         self._disable_search_btns()
+        self._set_env_controls_locked(True)
         self._apply_theme(self._dark)
         self._progress["maximum"] = total_assets
         self._progress["value"]   = 0
         self._status_lbl.configure(text="Lösche …")
+        # base_url/auth JETZT einfrieren: die Löschung läuft in einem Hintergrund-
+        # Thread über potenziell viele Requests. Würde man self._base_url/self._auth
+        # live im Loop lesen, könnte ein Umgebungswechsel MITTEN in der laufenden
+        # Löschung (Radiobutton + "Credentials laden" sind sonst weiter klickbar)
+        # spätere Assets gegen die NEUE Umgebung löschen, obwohl deren IDs aus der
+        # ALTEN Umgebung stammen. Deshalb: einmal snapshotten, nur noch lokal nutzen.
+        base_url = self._base_url
+        auth     = self._auth
         threading.Thread(target=self._delete_worker,
-                         args=(selected_items,), daemon=True).start()
+                         args=(selected_items, base_url, auth), daemon=True).start()
 
-    def _delete_worker(self, selected_items: Dict[str, List[str]]):
+    def _delete_worker(self, selected_items: Dict[str, List[str]],
+                        base_url: str, auth: Tuple):
         ok_list        = []
         fail_list      = []
         items_deleted  = []
@@ -1609,7 +1578,7 @@ class KryDeleteApp(tk.Tk):
                 http_code = 0
                 try:
                     success, http_code = delete_asset(
-                        self._base_url, self._auth, iid, ak)
+                        base_url, auth, iid, ak)
                 except Exception as exc:
                     success = False
                     self._log_write(f"  [FEHLER] {ak}: {exc}\n")
@@ -1634,7 +1603,7 @@ class KryDeleteApp(tk.Tk):
                 self._log_write(f"  → Item vollständig leer, wird gelöscht …\n")
                 item_code = 0
                 try:
-                    item_ok, item_code = delete_item(self._base_url, self._auth, iid)
+                    item_ok, item_code = delete_item(base_url, auth, iid)
                 except Exception as exc:
                     item_ok = False
                     self._log_write(f"  [FEHLER] Item {iid}: {exc}\n")
@@ -1671,6 +1640,7 @@ class KryDeleteApp(tk.Tk):
         self.after(0, lambda: self._status_lbl.configure(
             text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"))
         self.after(0, self._enable_search_btns)
+        self.after(0, lambda: self._set_env_controls_locked(False))
         self.after(0, lambda: messagebox.showinfo(
             "STAC Löschung abgeschlossen",
             f"Assets erfolgreich:    {len(ok_list)}\n"
@@ -1687,7 +1657,14 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_url_lbl.configure(text=GDWH_ENVIRONMENTS[env])
         self._gdwh_base_url = GDWH_ENVIRONMENTS[env]
         self._gdwh_fetch_btn.config(state="normal")
+        self._gdwh_reset_state()
         self._apply_theme(self._dark)
+
+    def _gdwh_on_gds_key_change(self, _event=None):
+        # Siehe _gdwh_reset_state(): die DataPackage-IDs einer geladenen Liste
+        # gehören zum GDS-Key, unter dem sie geladen wurden – bei Wechsel des
+        # GDS-Key sofort verwerfen, statt sie gegen den neuen Key stehen zu lassen.
+        self._gdwh_reset_state()
 
     def _gdwh_fetch_imports(self):
         gds_key = self._gdwh_gds_key_var.get().strip()
@@ -1753,6 +1730,18 @@ class KryDeleteApp(tk.Tk):
                 return bool(m and m.group(1) == year)
             data = [item for item in data if _year_matches(item)]
         self._gdwh_populate_list(data)
+
+    def _gdwh_reset_state(self):
+        # Sicherheitskritisch: bei Umgebungs- oder GDS-Key-Wechsel muss die
+        # bereits geladene DataPackage-Liste (inkl. Auswahl) sofort verworfen
+        # werden. Sonst würde eine gegen den ALTEN Kontext geladene Auswahl
+        # gegen den NEU gewählten Kontext gelöscht (_gdwh_base_url/gds_key
+        # werden bei der Löschung stets frisch/aktuell gelesen).
+        self._gdwh_enriched = []
+        self._gdwh_clear_list()
+        self._gdwh_del_btn.config(
+            text="Ausgewählte DataPackages löschen …", state="disabled")
+        self._gdwh_preview_lbl.configure(text="Noch keine Imports geladen.")
 
     def _gdwh_clear_list(self):
         for w in self._gdwh_list_frame.winfo_children():
@@ -1936,18 +1925,24 @@ class KryDeleteApp(tk.Tk):
 
         self._gdwh_del_btn.config(state="disabled")
         self._gdwh_fetch_btn.config(state="disabled")
+        self._set_gdwh_env_controls_locked(True)
         self._gdwh_progress["maximum"] = len(selected)
         self._gdwh_progress["value"]   = 0
         self._gdwh_status_lbl.configure(text="Lösche …")
         self._apply_theme(self._dark)
 
+        # base_url JETZT einfrieren (siehe _start_deletion für STAC): GDWH hat
+        # keinen Credentials-Schritt, ein Umgebungs-Radiobutton würde
+        # self._gdwh_base_url sonst live mitten in der Löschung ändern.
+        base_url = self._gdwh_base_url
         threading.Thread(
             target=self._gdwh_delete_worker,
-            args=(list(selected.keys()), gds_key, email),
+            args=(list(selected.keys()), gds_key, email, base_url),
             daemon=True,
         ).start()
 
-    def _gdwh_delete_worker(self, pkg_ids: List[str], gds_key: str, email: str):
+    def _gdwh_delete_worker(self, pkg_ids: List[str], gds_key: str, email: str,
+                             base_url: str):
         ok_list   = []
         fail_list = []
         ts        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2007,7 +2002,7 @@ class KryDeleteApp(tk.Tk):
         for i, pkg_id in enumerate(pkg_ids, 1):
             try:
                 job = gdwh_delete_import(
-                    self._gdwh_base_url,
+                    base_url,
                     gds_key, pkg_id, email)
                 job_id     = job.get("id", "?")
                 job_status = job.get("status", "gestartet")
@@ -2042,6 +2037,7 @@ class KryDeleteApp(tk.Tk):
         self.after(0, lambda: self._gdwh_status_lbl.configure(
             text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"))
         self.after(0, lambda: self._gdwh_fetch_btn.config(state="normal"))
+        self.after(0, lambda: self._set_gdwh_env_controls_locked(False))
         self.after(0, lambda: messagebox.showinfo(
             "GDWH Löschung abgeschlossen",
             f"Erfolgreich:    {len(ok_list)}\n"
@@ -2065,6 +2061,29 @@ class KryDeleteApp(tk.Tk):
 
     def _enable_search_btns(self):
         self._load_btn.config(state="normal")
+
+    def _set_env_controls_locked(self, locked: bool):
+        # Während eine Löschung läuft, dürfen Umgebung und Credentials nicht
+        # wechselbar sein: base_url/auth wurden zwar beim Start eingefroren
+        # (siehe _start_deletion), aber ein Wechsel mitten in der Löschung
+        # wäre trotzdem irreführend/gefährlich für die Bedienperson.
+        state = "disabled" if locked else "normal"
+        for rb in self._env_radios:
+            rb.config(state=state)
+        self._cred_btn.config(state=state)
+
+    def _set_gdwh_env_controls_locked(self, locked: bool):
+        # Analog zu _set_env_controls_locked(): GDWH hat keinen separaten
+        # "Credentials laden"-Schritt (SSPI läuft transparent) – ein Klick auf
+        # den Umgebungs-Radiobutton würde self._gdwh_base_url sonst SOFORT
+        # ändern, auch mitten in einer laufenden Löschung. GDS-Key ebenso
+        # sperren, da eine laufende Löschung an einen fest eingefrorenen
+        # GDS-Key gebunden ist (siehe _gdwh_start_deletion).
+        state = "disabled" if locked else "normal"
+        for rb in self._gdwh_env_radios:
+            rb.config(state=state)
+        self._gdwh_gds_combo.config(
+            state="disabled" if locked else "readonly")
 
     def _set_busy(self, busy: bool):
         state = "disabled" if busy else ("normal" if self._auth else "disabled")

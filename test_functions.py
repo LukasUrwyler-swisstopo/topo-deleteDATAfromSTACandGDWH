@@ -25,7 +25,7 @@ from gdwh_api import (
     GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_delete_import,
     gdwh_import_id, gdwh_import_name, gdwh_import_date, gdwh_import_status,
-    gdwh_import_footprint_bbox, gdwh_estimate_area,
+    gdwh_import_footprint_bbox,
     gdwh_bucket_path,
     _lv95, _extract_year_from_folder, _area_from_folder_name, _parse_iso_dt,
 )
@@ -459,36 +459,6 @@ class TestGdwhImportFootprintBbox:
         assert "2'657" in result
         assert "1'153" in result
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GDWH Hilfsfunktionen – gdwh_estimate_area
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestGdwhEstimateArea:
-
-    # Footprint nahe OBERAAR (X≈2657000, Y≈1160000)
-    WKT_OBERAAR = ("POLYGON ((2654000 1158000,2654000 1162000,"
-                   "2660000 1162000,2660000 1158000,2654000 1158000))")
-
-    # Footprint nahe GORNER (X≈2621000, Y≈1094000)
-    WKT_GORNER  = ("POLYGON ((2618000 1091000,2618000 1097000,"
-                   "2624000 1097000,2624000 1091000,2618000 1091000))")
-
-    def test_gibt_geschaetzt_suffix(self):
-        result = gdwh_estimate_area({"footprint": self.WKT_OBERAAR})
-        assert "(geschätzt)" in result
-
-    def test_kein_footprint_gibt_leerstring(self):
-        assert gdwh_estimate_area({}) == ""
-        assert gdwh_estimate_area({"footprint": ""}) == ""
-
-    def test_oberaar_wird_erkannt(self):
-        result = gdwh_estimate_area({"footprint": self.WKT_OBERAAR})
-        assert "OBERAAR" in result
-
-    def test_gorner_wird_erkannt(self):
-        result = gdwh_estimate_area({"footprint": self.WKT_GORNER})
-        assert "GORNER" in result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
