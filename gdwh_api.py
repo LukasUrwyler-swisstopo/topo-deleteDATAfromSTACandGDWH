@@ -18,7 +18,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import requests
 import urllib3
 
@@ -139,16 +139,6 @@ def gdwh_import_id(imp: Dict) -> str:
     return "?"
 
 
-def gdwh_import_name(imp: Dict) -> str:
-    """Lesbarer Anzeigename für ein DataPackage."""
-    for key in ("name", "datapackageName", "package_name", "description", "label"):
-        if imp.get(key):
-            return str(imp[key])
-    # Kein Namensfeld vorhanden: UUID gekürzt anzeigen
-    uid = gdwh_import_id(imp)
-    return uid[:8] + "…" if len(uid) > 8 else uid
-
-
 def gdwh_import_date(imp: Dict) -> str:
     """Extrahiert und kürzt das Datum eines Imports."""
     for key in ("importDate", "date", "created_at", "createdAt", "timestamp", "created"):
@@ -156,14 +146,6 @@ def gdwh_import_date(imp: Dict) -> str:
         if val:
             return str(val)[:16].replace("T", " ")
     return "–"
-
-
-def gdwh_import_status(imp: Dict) -> str:
-    """Status eines Imports."""
-    for key in ("status", "state", "importStatus"):
-        if imp.get(key):
-            return str(imp[key])
-    return ""
 
 
 # ─── Bucket-Scan & XML-Parsing ───────────────────────────────────────────────
@@ -389,17 +371,47 @@ def gdwh_match_folder(imp: Dict, bucket_entries: List[Dict],
     return best
 
 
+def _polygon_centroid(coords: List[Tuple[float, float]]) -> Tuple[float, float]:
+    """Echter Flächenschwerpunkt eines Polygon-Rings via Shoelace-Formel.
+
+    Ein einfacher Eckpunkt-Mittelwert (arithmetisches Mittel aller Koordinaten)
+    ist nur bei symmetrischen Polygonen korrekt und wird bei ungleichmässiger
+    Punktdichte (z.B. mehr Stützpunkten auf einer Seite, oder dem doppelt
+    gezählten Schlusspunkt eines geschlossenen Rings) spürbar verzerrt.
+
+    Fällt bei entarteten Ringen (Fläche ≈ 0, z.B. Linie/Punkt oder < 3 Punkte)
+    auf den einfachen Mittelwert zurück.
+    """
+    n = len(coords)
+    if n < 3:
+        return (sum(x for x, _ in coords) / n, sum(y for _, y in coords) / n)
+    area2, cx, cy = 0.0, 0.0, 0.0
+    for i in range(n):
+        x0, y0 = coords[i]
+        x1, y1 = coords[(i + 1) % n]
+        cross  = x0 * y1 - x1 * y0
+        area2 += cross
+        cx    += (x0 + x1) * cross
+        cy    += (y0 + y1) * cross
+    area = area2 / 2.0
+    if abs(area) < 1e-9:
+        return (sum(x for x, _ in coords) / n, sum(y for _, y in coords) / n)
+    return (cx / (6.0 * area), cy / (6.0 * area))
+
+
 def gdwh_import_footprint_bbox(imp: Dict) -> str:
-    """Zentroid des Footprints in LV95 CH1903+ (EPSG:2056), Schweizer Notation."""
+    """Echter Flächenschwerpunkt des Footprints in LV95 CH1903+ (EPSG:2056),
+    Schweizer Notation. Geht wie bisher von einem einzelnen (äusseren)
+    Polygon-Ring aus – Multi-Polygone/Löcher werden nicht gesondert behandelt."""
     wkt = imp.get("footprint", "")
     if not wkt:
         return ""
     try:
-        coords = re.findall(r"([\d.]+)\s+([\d.]+)", wkt)
+        coords = [(float(x), float(y))
+                  for x, y in re.findall(r"([\d.]+)\s+([\d.]+)", wkt)]
         if not coords:
             return ""
-        cx = sum(float(x) for x, _ in coords) / len(coords)
-        cy = sum(float(y) for _, y in coords) / len(coords)
+        cx, cy = _polygon_centroid(coords)
         return f"LV95  E {_lv95(cx)} / N {_lv95(cy)}"
     except Exception:
         return ""

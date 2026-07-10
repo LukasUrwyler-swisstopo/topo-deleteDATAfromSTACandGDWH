@@ -17,6 +17,13 @@ _PROXY = {
     "https": "http://proxy-bvcol.admin.ch:8080",
 }
 
+# INT/PROD sind öffentliche Endpunkte (sys-data.int.bgdi.ch / data.geo.admin.ch)
+# mit regulär vertrauenswürdigen Zertifikaten – anders als GDWH (interne CA)
+# gibt es hier keinen Grund, die TLS-Prüfung zu deaktivieren. DELETE-Requests
+# tragen HTTP-Basic-Auth-Credentials; ohne Zertifikatsprüfung wären diese
+# gegenüber einem Man-in-the-Middle im Netzwerkpfad ungeschützt.
+STAC_SSL_VERIFY: bool = True
+
 COLLECTION_ID = "ch.swisstopo.spezialbefliegungen"
 
 ENVIRONMENTS = {
@@ -78,12 +85,12 @@ def _request(method, url: str, **kwargs) -> requests.Response:
 
 def _session_get(url: str, auth: Tuple, params: dict = None) -> requests.Response:
     return _request(requests.get, url, auth=auth, params=params,
-                    verify=False, timeout=(30, 60))
+                    verify=STAC_SSL_VERIFY, timeout=(30, 60))
 
 
 def _session_delete(url: str, auth: Tuple) -> requests.Response:
     return _request(requests.delete, url, auth=auth,
-                    verify=False, timeout=(30, 60))
+                    verify=STAC_SSL_VERIFY, timeout=(30, 60))
 
 
 # ─── Öffentliche API-Funktionen ───────────────────────────────────────────────
@@ -118,14 +125,6 @@ def get_collection_items(base_url: str, auth: Tuple, log_fn=print) -> List[Dict]
     return all_items
 
 
-def filter_items(items: List[Dict], search_term: str = "") -> List[Dict]:
-    """Filtert Items nach Teilstring in der ID (case-insensitive)."""
-    if not search_term:
-        return items
-    term = search_term.lower()
-    return [item for item in items if term in item.get("id", "").lower()]
-
-
 def delete_asset(base_url: str, auth: Tuple,
                  item_id: str, asset_key: str) -> Tuple[bool, int]:
     """Löscht einen einzelnen Asset. Gibt (Erfolg, HTTP-Statuscode) zurück."""
@@ -150,10 +149,10 @@ def check_asset_info(href: str, auth: Tuple) -> Dict:
     if not href:
         return result
     try:
-        r = _request(requests.head, href, verify=False,
+        r = _request(requests.head, href, verify=STAC_SSL_VERIFY,
                     timeout=(5, 15), allow_redirects=True)
         if r.status_code in (401, 403):
-            r = _request(requests.head, href, auth=auth, verify=False,
+            r = _request(requests.head, href, auth=auth, verify=STAC_SSL_VERIFY,
                         timeout=(5, 15), allow_redirects=True)
         result["status"] = r.status_code
         cl = r.headers.get("Content-Length", "")
@@ -179,12 +178,14 @@ def stac_item_acq_date(item: Dict) -> str:
 
 
 def stac_item_year(item: Dict) -> str:
-    """Extrahiert das Aufnahmejahr aus der Item-ID (Befliegungsdatum, nicht Importdatum)."""
-    m = re.search(r"\b(20\d{2})\b", item.get("id", ""))
+    """Extrahiert das Aufnahmejahr aus der Item-ID (Befliegungsdatum, nicht Importdatum).
+    Nutzt (?<!\\d)/(?!\\d) statt \\b: '_' zählt als Wortzeichen, ein \\b-Anker würde
+    Jahre nach einem Unterstrich (z.B. '..._2023-08-15') fälschlich NICHT matchen."""
+    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", item.get("id", ""))
     if m:
         return m.group(1)
     # Fallback: properties.datetime (kann Importdatum sein – nur wenn ID kein Jahr hat)
-    m = re.search(r"\b(20\d{2})\b", item.get("properties", {}).get("datetime", ""))
+    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", item.get("properties", {}).get("datetime", ""))
     return m.group(1) if m else ""
 
 

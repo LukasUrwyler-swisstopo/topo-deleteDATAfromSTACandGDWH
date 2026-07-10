@@ -42,7 +42,7 @@ topo-deleteDATAfromSTAC/
 ├── 0_GUI_stac_gdwh_delete_Data.py    ← Einstiegspunkt (GUI, 2 Tabs)
 ├── stac_api.py                        ← STAC API-Funktionen (Modul)
 ├── gdwh_api.py                        ← GDWH API-Funktionen (Modul)
-├── test_functions.py                  ← pytest-Tests (116 Tests)
+├── test_functions.py                  ← pytest-Tests (92 Tests)
 ├── secrets/
 │   ├── stac_credentials.json          ← STAC-Zugangsdaten (nicht in Git!)
 │   └── proxy_config.json              ← Proxy-Konfiguration (optional)
@@ -91,6 +91,8 @@ Wird ein Item durch die Löschung **vollständig leer** (alle Assets entfernt), 
 `Credentials laden` liest die Zugangsdaten aus `secrets/stac_credentials.json` (Button ist amber, solange nicht geladen).  
 Erst danach wird der `Laden`-Button aktiviert.
 
+> Nach dem **ersten erfolgreichen Laden** wechselt der Button-Text dauerhaft von `ITEM-Liste laden` auf `ITEM-Liste aktualisieren`. Ein erneuter Klick leert die Baumansicht sofort und lädt danach neu. Bei Umgebungswechsel wird der Button-Text (und die Auswahl) zurückgesetzt.
+
 `STAC Browser öffnen` öffnet den swisstopo STAC-Browser für die gewählte Umgebung/Collection im Standardbrowser und kopiert den Link in die Zwischenablage.
 
 ---
@@ -136,14 +138,14 @@ Nach dem Laden erscheinen alle gefilterten Items als **Baumansicht (Treeview)**,
 
 ```
 Item / Asset                              Auswahl  Area     Status     Typ    Grösse    Geändert
-▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ○    OBERAAR              2 Assets
-      nrgb-16bit-cog.tif                              ○    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
-      thumbnail.jpg                                   ○              ✓ 200   .jpg    61.2 KB  2026-06-16
+▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ◯    OBERAAR              2 Assets
+      nrgb-16bit-cog.tif                              ◯    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
+      thumbnail.jpg                                   ◯              ✓ 200   .jpg    61.2 KB  2026-06-16
 ```
 
 - **Area** wird zuerst aus den Item-Properties, sonst aus der Asset-Description (`Area: ...`) extrahiert.
 - Der Collection-Präfix `ch.swisstopo.spezialbefliegungen_` wird im Item-Namen ausgeblendet, Aufnahmedatum/Area erscheinen im Item-Label.
-- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ○ nicht ausgewählt · ● ausgewählt · ◐ (nur beim Item) teilweise ausgewählt.
+- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ◯ nicht ausgewählt · ⬤ ausgewählt (amber eingefärbt) · ◐ (nur beim Item) teilweise ausgewählt. Eine Item-Zeile wird nur dann komplett amber, wenn **alle** ihre Assets ausgewählt sind. Liegt für ein Asset bereits ein Prüfergebnis vor (grün/rot/orange, siehe unten), hat dessen Farbe Vorrang vor der Amber-Auswahlmarkierung.
 - **Standardmässig sind alle Assets abgewählt** — die Auswahl muss bewusst getroffen werden (anders als im read-only Monitoring-Tool).
 - Rechtsklick auf eine Zeile öffnet ein Kontextmenü (URL kopieren, im Browser öffnen, Item-ID kopieren, im STAC Browser öffnen); Doppelklick auf ein Asset öffnet dessen URL direkt im Browser.
 
@@ -183,6 +185,8 @@ Vor der Löschung erscheint ein **zweistufiger Sicherheitsdialog**:
 2. Umgebungsname eintippen (`INT` oder `PROD`)
 
 Das Log protokolliert jeden gelöschten Asset mit Status `[OK]` oder `[FAIL]`.
+
+Nach Abschluss werden erfolgreich gelöschte Assets/Items automatisch aus der Baumansicht entfernt (kein manueller Reload nötig). Fehlgeschlagene Assets bleiben sichtbar und ausgewählt.
 
 **Item-Löschung:** Werden durch die Auswahl alle Assets eines Items entfernt, löscht das Tool das nun leere Item automatisch nach. Haben andere Assets im gleichen Item keine Checkbox gesetzt, bleibt das Item vollständig erhalten.
 
@@ -226,6 +230,8 @@ Authentifizierung läuft automatisch über die **Windows-Session** (SSPI) — ke
 ### Schritt 2 — GDS-Key eingeben & Imports laden
 
 GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`, `SB_DSM_PUNKTWOLKE`) und `Imports laden` klicken.
+
+> Nach dem **ersten erfolgreichen Laden** wechselt der Button-Text dauerhaft auf `Imports aktualisieren`. Ein erneuter Klick leert die Liste sofort und lädt danach neu. Bei Umgebungs- oder GDS-Key-Wechsel wird der Button-Text (und die Auswahl) zurückgesetzt.
 
 Das Tool lädt alle DataPackages per API und reichert sie danach automatisch mit Metadaten an:
 
@@ -297,6 +303,8 @@ Vor der Löschung erscheint ein **zweistufiger Sicherheitsdialog** analog zum ST
 
 Das Log protokolliert den gestarteten Lösch-Job pro Import mit Job-ID und initialem Status.
 
+Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automatisch aus der Liste entfernt (kein manueller Reload nötig). Fehlgeschlagene Packages bleiben sichtbar und ausgewählt.
+
 ---
 
 ### Typischer Workflow GDWH — DataPackage entfernen
@@ -319,7 +327,7 @@ Das Log protokolliert den gestarteten Lösch-Job pro Import mit Job-ID und initi
 pytest test_functions.py -v
 ```
 
-116 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt), inkl. `gdwh_estimate_area`, `gdwh_import_footprint_bbox`, `gdwh_bucket_path` und `check_asset_info`.
+92 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_bucket_path` und `check_asset_info`.
 
 ---
 

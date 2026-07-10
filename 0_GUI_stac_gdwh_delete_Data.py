@@ -287,12 +287,16 @@ class KryDeleteApp(tk.Tk):
     _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
-    _CHK_ON      = "●"
-    _CHK_OFF     = "○"
+    _CHK_ON      = "⬤"
+    _CHK_OFF     = "◯"
     _CHK_PARTIAL = "◐"
 
-    _LOAD_BTN_LABEL = "ITEM-Liste laden"
+    _LOAD_BTN_LABEL        = "ITEM-Liste laden"
+    _LOAD_BTN_LABEL_RELOAD = "ITEM-Liste aktualisieren"
     _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    _GDWH_FETCH_BTN_LABEL        = "Imports laden"
+    _GDWH_FETCH_BTN_LABEL_RELOAD = "Imports aktualisieren"
 
     def __init__(self):
         super().__init__()
@@ -316,11 +320,20 @@ class KryDeleteApp(tk.Tk):
         # Lade-Spinner im "ITEM-Liste laden"-Button
         self._spinner_job: Optional[str] = None
         self._spinner_idx: int = 0
+        # Kippt auf True, sobald zum ersten Mal Items im Tree angezeigt wurden
+        # (nicht schon beim reinen Fetch) – danach zeigt der Button dauerhaft
+        # die "aktualisieren"-Variante. Reset bei Umgebungswechsel.
+        self._items_loaded_once: bool = False
 
         # GDWH State
         self._gdwh_base_url: str = GDWH_ENVIRONMENTS["INT"]
         self._gdwh_imports: List[Dict] = []
         self._gdwh_selection: Dict[str, tk.BooleanVar] = {}
+        # Container-Frame je DataPackage-Zeile (pkg_id → Frame), damit einzelne
+        # Zeilen nach erfolgreicher Löschung gezielt entfernt werden können.
+        self._gdwh_row_widgets: Dict[str, tk.Frame] = {}
+        # Analog zu self._items_loaded_once, für den "Imports laden"-Button.
+        self._gdwh_loaded_once: bool = False
 
         self._file_logger = self._setup_file_logger()
         self._build_ui()
@@ -749,7 +762,7 @@ class KryDeleteApp(tk.Tk):
             "<<ComboboxSelected>>", self._gdwh_on_gds_key_change)
 
         self._gdwh_fetch_btn = ttk.Button(
-            sec, text="Imports laden",
+            sec, text=self._GDWH_FETCH_BTN_LABEL,
             command=self._gdwh_fetch_imports, state="normal",
         )
         self._gdwh_fetch_btn.grid(row=1, column=2, pady=(6, 0))
@@ -982,10 +995,14 @@ class KryDeleteApp(tk.Tk):
 
         # STAC Asset-Tree
         self._tree.tag_configure("item", foreground=T["chk_item"], font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("item_selected", foreground=T["hint"], font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("asset_ok",   foreground=T["ok"])
         self._tree.tag_configure("asset_err",  foreground=T["err"])
         self._tree.tag_configure("asset_warn", foreground=T["hint"])
         self._tree.tag_configure("asset_dim",  foreground=T["fg_dim"])
+        # Amber-Auswahlmarkierung: gilt nur, solange kein echtes Prüfergebnis
+        # (asset_ok/err/warn) vorliegt – siehe _effective_asset_tag().
+        self._tree.tag_configure("asset_selected", foreground=T["hint"])
 
         self._gdwh_list_canvas.configure(bg=T["chk_bg"])
         self._gdwh_list_frame.configure(bg=T["chk_bg"])
@@ -1066,6 +1083,10 @@ class KryDeleteApp(tk.Tk):
         self._cred_btn.configure(style="Amber.TButton")
         self._load_btn.config(state="disabled")
         self._load_btn.configure(style="AmberBold.TButton")
+        # Neue Umgebung = noch nichts geladen: Button-Text auf Ausgangstext
+        # zurücksetzen, sonst würde fälschlich "aktualisieren" stehen.
+        self._items_loaded_once = False
+        self._load_btn.config(text=self._LOAD_BTN_LABEL)
         self._clear_tree()
         self._clear_state()
         self._preview_lbl.configure(text="Noch keine Vorschau geladen.")
@@ -1206,6 +1227,24 @@ class KryDeleteApp(tk.Tk):
     def _chk_glyph(self, asset_nid: str) -> str:
         return self._CHK_ON if self._is_checked(asset_nid) else self._CHK_OFF
 
+    def _effective_asset_tag(self, asset_nid: str) -> str:
+        """Zeilen-Tag für eine Asset-Zeile: ein echtes Prüfergebnis
+        (asset_ok/err/warn) hat immer Vorrang vor der reinen
+        Amber-Auswahlmarkierung – sonst ginge die Information verloren,
+        ob ein ausgewähltes Asset z.B. fehlgeschlagen ist."""
+        status_tag = self._nodes.get(asset_nid, {}).get("status_tag", "asset_dim")
+        if status_tag != "asset_dim":
+            return status_tag
+        return "asset_selected" if self._is_checked(asset_nid) else "asset_dim"
+
+    def _refresh_asset_row(self, asset_nid: str):
+        if not self._tree.exists(asset_nid):
+            return
+        vals = list(self._tree.item(asset_nid, "values"))
+        vals[0] = self._chk_glyph(asset_nid)
+        self._tree.item(asset_nid, values=vals,
+                        tags=(self._effective_asset_tag(asset_nid),))
+
     def _item_asset_nids(self, item_id: str) -> List[str]:
         return [nid for nid, d in self._nodes.items()
                 if d["kind"] == "asset" and d["item_id"] == item_id]
@@ -1224,9 +1263,14 @@ class KryDeleteApp(tk.Tk):
         item_nid = f"item::{item_id}"
         if not self._tree.exists(item_nid):
             return
+        glyph = self._item_check_glyph(self._item_asset_nids(item_id))
         vals = list(self._tree.item(item_nid, "values"))
-        vals[0] = self._item_check_glyph(self._item_asset_nids(item_id))
-        self._tree.item(item_nid, values=vals)
+        vals[0] = glyph
+        # Gruppenzeile wird nur bei VOLLSTÄNDIGER Auswahl amber – bei
+        # Teilauswahl (◐) bleibt sie in der normalen "item"-Darstellung,
+        # es gibt keinen dritten "amber-halb"-Zustand.
+        tag = "item_selected" if glyph == self._CHK_ON else "item"
+        self._tree.item(item_nid, values=vals, tags=(tag,))
 
     def _on_tree_click(self, event):
         if self._tree.identify_region(event.x, event.y) != "cell":
@@ -1240,18 +1284,14 @@ class KryDeleteApp(tk.Tk):
 
         if d["kind"] == "asset":
             self._checked[row] = not self._is_checked(row)
-            vals = list(self._tree.item(row, "values"))
-            vals[0] = self._chk_glyph(row)
-            self._tree.item(row, values=vals)
+            self._refresh_asset_row(row)
             self._refresh_item_glyph(d["item_id"])
         else:  # item: alle zugehörigen Assets gemeinsam (de)selektieren
             asset_nids = self._item_asset_nids(d["item_id"])
             new_state  = self._item_check_glyph(asset_nids) != self._CHK_ON
             for nid in asset_nids:
                 self._checked[nid] = new_state
-                vals = list(self._tree.item(nid, "values"))
-                vals[0] = self._chk_glyph(nid)
-                self._tree.item(nid, values=vals)
+                self._refresh_asset_row(nid)
             self._refresh_item_glyph(d["item_id"])
         self._update_preview_label()
         return "break"
@@ -1300,11 +1340,13 @@ class KryDeleteApp(tk.Tk):
                                   tags=("asset_dim",))
                 self._nodes[anid] = {
                     "kind": "asset", "item_id": iid, "asset_key": ak,
-                    "href": href, "item": item,
+                    "href": href, "item": item, "status_tag": "asset_dim",
                 }
 
         if not any_visible:
             self._preview_lbl.configure(text="Keine Assets nach aktuellem Filter.")
+        else:
+            self._items_loaded_once = True
 
         self._enable_search_btns()
         st = "normal" if any_visible else "disabled"
@@ -1343,7 +1385,10 @@ class KryDeleteApp(tk.Tk):
             if self._tree.exists(nid):
                 cur = list(self._tree.item(nid, "values"))
                 cur[2] = "⟳"
-                self._tree.item(nid, values=cur, tags=("asset_dim",))
+                # Auswahl bleibt während der Prüfung sichtbar (Amber bleibt
+                # erhalten, falls Asset ausgewählt ist) – status_tag ist noch
+                # "asset_dim" (kein Ergebnis), daher via effektivem Tag setzen.
+                self._tree.item(nid, values=cur, tags=(self._effective_asset_tag(nid),))
         threading.Thread(target=self._check_worker, args=(tasks,), daemon=True).start()
 
     def _check_worker(self, tasks: List[Tuple[str, str, str, str]]):
@@ -1381,25 +1426,22 @@ class KryDeleteApp(tk.Tk):
                           size_text: str, date_text: str):
         if not self._tree.exists(nid):
             return
+        if nid in self._nodes:
+            self._nodes[nid]["status_tag"] = tag
         cur = list(self._tree.item(nid, "values"))
         cur[2], cur[4], cur[5] = status_text, size_text, date_text
-        self._tree.item(nid, values=cur, tags=(tag,))
+        self._tree.item(nid, values=cur, tags=(self._effective_asset_tag(nid),))
 
     def _select_faulty_assets(self):
         count = 0
         for nid, d in self._nodes.items():
             if d["kind"] != "asset":
                 continue
-            tags     = self._tree.item(nid, "tags") if self._tree.exists(nid) else ()
-            tag      = tags[0] if tags else "asset_dim"
-            is_error = tag in ("asset_err", "asset_warn")
+            is_error = d.get("status_tag", "asset_dim") in ("asset_err", "asset_warn")
             self._checked[nid] = is_error
             if is_error:
                 count += 1
-            if self._tree.exists(nid):
-                vals = list(self._tree.item(nid, "values"))
-                vals[0] = self._chk_glyph(nid)
-                self._tree.item(nid, values=vals)
+            self._refresh_asset_row(nid)
         for nid, d in self._nodes.items():
             if d["kind"] == "item":
                 self._refresh_item_glyph(d["item_id"])
@@ -1417,10 +1459,7 @@ class KryDeleteApp(tk.Tk):
             if d["kind"] != "asset":
                 continue
             self._checked[nid] = state
-            if self._tree.exists(nid):
-                vals = list(self._tree.item(nid, "values"))
-                vals[0] = self._chk_glyph(nid)
-                self._tree.item(nid, values=vals)
+            self._refresh_asset_row(nid)
         for nid, d in self._nodes.items():
             if d["kind"] == "item":
                 self._refresh_item_glyph(d["item_id"])
@@ -1534,6 +1573,7 @@ class KryDeleteApp(tk.Tk):
     def _delete_worker(self, selected_items: Dict[str, List[str]],
                         base_url: str, auth: Tuple):
         ok_list        = []
+        ok_pairs       = []   # [(item_id, asset_key), ...] – für Tree-/Datenbereinigung
         fail_list      = []
         items_deleted  = []
         items_del_fail = []
@@ -1587,6 +1627,7 @@ class KryDeleteApp(tk.Tk):
                 if success:
                     ok_for_item += 1
                     ok_list.append(f"{iid}/{ak}")
+                    ok_pairs.append((iid, ak))
                     self._log_write(f"  [OK]   gelöscht: {ak}  (HTTP {http_code})\n")
                     session_logger.info(f"[STAC OK]   {env}/{iid}/{ak}  HTTP {http_code}")
                 else:
@@ -1627,6 +1668,19 @@ class KryDeleteApp(tk.Tk):
         if items_deleted or items_del_fail:
             self._log_write(f"  Items gelöscht:        {len(items_deleted)}\n"
                             f"  Items fehlgeschlagen:  {len(items_del_fail)}\n")
+        # Die serverseitige Such-/Katalog-Ansicht (GET .../items) hinkt der
+        # transaktionalen Löschung erfahrungsgemäss einige Minuten hinterher
+        # (Cache/Such-Index) - erfolgreich gelöschte Assets/Items können nach
+        # "aktualisieren" deshalb kurzzeitig weiterhin auftauchen, obwohl die
+        # Löschung (siehe HTTP-Codes oben) bereits erfolgreich war.
+        delay_hint = ""
+        if ok_list or items_deleted:
+            delay_hint = (
+                "\nHinweis: Änderungen können serverseitig einige Minuten "
+                "benötigen, bis sie in der Liste verschwinden (Cache/Such-"
+                "Index) - die Löschung selbst war bereits erfolgreich.\n"
+            )
+            self._log_write(delay_hint)
         self._log_write(f"{'='*60}\n")
         session_logger.info(
             f"[STAC END] Assets OK: {len(ok_list)} | FAIL: {len(fail_list)} | "
@@ -1637,16 +1691,60 @@ class KryDeleteApp(tk.Tk):
             item_summary = (f"\n\nItems vollständig gelöscht:  {len(items_deleted)}\n"
                             f"Item-Löschung fehlgeschl.:   {len(items_del_fail)}")
 
+        popup_hint = ""
+        if ok_list or items_deleted:
+            popup_hint = (
+                "\n\nHinweis: Änderungen können serverseitig einige Minuten\n"
+                "benötigen, bis sie in der Liste verschwinden (Cache/\n"
+                "Such-Index) - die Löschung selbst war bereits erfolgreich."
+            )
+
         self.after(0, lambda: self._status_lbl.configure(
             text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"))
         self.after(0, self._enable_search_btns)
         self.after(0, lambda: self._set_env_controls_locked(False))
+        self.after(0, lambda: self._remove_deleted_assets(ok_pairs, items_deleted))
         self.after(0, lambda: messagebox.showinfo(
             "STAC Löschung abgeschlossen",
             f"Assets erfolgreich:    {len(ok_list)}\n"
             f"Assets fehlgeschlagen: {len(fail_list)}"
-            f"{item_summary}",
+            f"{item_summary}"
+            f"{popup_hint}",
         ))
+
+    def _remove_deleted_assets(self, ok_pairs: List[Tuple[str, str]],
+                                items_deleted: List[str]):
+        """Entfernt erfolgreich gelöschte Assets/Items aus Tree UND den
+        zugrundeliegenden Datenstrukturen (_items_preview/_items_asset_hrefs/
+        _items_assets), damit ein späterer Filterwechsel (_apply_filters()
+        ruft _populate_tree() erneut auf) bereits gelöschte Zeilen nicht aus
+        den noch alten Rohdaten wieder aufleben lässt."""
+        touched_items = set()
+        for iid, ak in ok_pairs:
+            touched_items.add(iid)
+            nid = f"asset::{iid}::{ak}"
+            if self._tree.exists(nid):
+                self._tree.delete(nid)
+            self._nodes.pop(nid, None)
+            self._checked.pop(nid, None)
+            self._items_asset_hrefs.get(iid, {}).pop(ak, None)
+            if iid in self._items_assets and ak in self._items_assets[iid]:
+                self._items_assets[iid].remove(ak)
+
+        for iid in items_deleted:
+            touched_items.add(iid)
+            node_id = f"item::{iid}"
+            if self._tree.exists(node_id):
+                self._tree.delete(node_id)
+            self._nodes.pop(node_id, None)
+            self._items_preview = [it for it in self._items_preview if it["id"] != iid]
+            self._items_asset_hrefs.pop(iid, None)
+            self._items_assets.pop(iid, None)
+
+        for iid in touched_items - set(items_deleted):
+            self._refresh_item_glyph(iid)
+
+        self._update_preview_label()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # GDWH – Event Handler
@@ -1723,10 +1821,10 @@ class KryDeleteApp(tk.Tk):
                 imp, match = item
                 if match:
                     for src in (match.get("stac_datetime", ""), match.get("year", "")):
-                        m = re.search(r"\b(20\d{2})\b", src)
+                        m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
                         if m and m.group(1) == year:
                             return True
-                m = re.search(r"\b(20\d{2})\b", gdwh_import_date(imp))
+                m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
                 return bool(m and m.group(1) == year)
             data = [item for item in data if _year_matches(item)]
         self._gdwh_populate_list(data)
@@ -1742,11 +1840,17 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_del_btn.config(
             text="Ausgewählte DataPackages löschen …", state="disabled")
         self._gdwh_preview_lbl.configure(text="Noch keine Imports geladen.")
+        # Neuer Kontext (Umgebung/GDS-Key) = noch nichts geladen: Button-Text
+        # auf Ausgangstext zurücksetzen, sonst würde fälschlich "aktualisieren"
+        # stehen (analog zu _on_env_change() im STAC-Tab).
+        self._gdwh_loaded_once = False
+        self._gdwh_fetch_btn.config(text=self._GDWH_FETCH_BTN_LABEL)
 
     def _gdwh_clear_list(self):
         for w in self._gdwh_list_frame.winfo_children():
             w.destroy()
         self._gdwh_selection.clear()
+        self._gdwh_row_widgets.clear()
 
     def _gdwh_populate_list(self, enriched: List[Tuple]):
         self._gdwh_clear_list()
@@ -1768,10 +1872,10 @@ class KryDeleteApp(tk.Tk):
             imp, match = item
             if match:
                 for src in (match.get("stac_datetime", ""), match.get("year", "")):
-                    m = re.search(r"\b(20\d{2})\b", src)
+                    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
                     if m:
                         return int(m.group(1))
-            m = re.search(r"\b(20\d{2})\b", gdwh_import_date(imp))
+            m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
             return int(m.group(1)) if m else 0
 
         for imp, match in sorted(enriched, key=_year_key, reverse=True):
@@ -1788,12 +1892,12 @@ class KryDeleteApp(tk.Tk):
             year = ""
             if match:
                 for src in (stac_datetime, match.get("year", "")):
-                    m = re.search(r"\b(20\d{2})\b", src)
+                    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
                     if m:
                         year = m.group(1)
                         break
             if not year:
-                m = re.search(r"\b(20\d{2})\b", pkg_date)
+                m = re.search(r"(?<!\d)(20\d{2})(?!\d)", pkg_date)
                 year = m.group(1) if m else ""
 
             area_color  = T["accent"] if area else T["fg_dim"]
@@ -1803,8 +1907,15 @@ class KryDeleteApp(tk.Tk):
             var.trace_add("write", lambda *_: self._gdwh_on_checkbox_change())
             self._gdwh_selection[pkg_id] = var
 
+            # Container für alle 3 Zeilen dieses Packages – erlaubt, die Zeile
+            # nach erfolgreicher Löschung gezielt zu entfernen (statt die ganze
+            # Liste neu zu laden), siehe _gdwh_remove_deleted_rows().
+            entry_frame = tk.Frame(self._gdwh_list_frame, bg=T["chk_bg"])
+            entry_frame.pack(fill="x")
+            self._gdwh_row_widgets[pkg_id] = entry_frame
+
             # ── Zeile 1: Jahr  AREA  GDS-Key ─────────────────────────────────
-            row1 = tk.Frame(self._gdwh_list_frame, bg=T["chk_bg"])
+            row1 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row1.pack(fill="x", padx=6, pady=(5, 0))
 
             tk.Checkbutton(
@@ -1834,7 +1945,7 @@ class KryDeleteApp(tk.Tk):
                 ).pack(side="left")
 
             # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime ─────────
-            row2 = tk.Frame(self._gdwh_list_frame, bg=T["chk_bg"])
+            row2 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row2.pack(fill="x", padx=30, pady=0)
 
             if auftragstyp:
@@ -1858,7 +1969,7 @@ class KryDeleteApp(tk.Tk):
                 ).pack(side="left")
 
             # ── Zeile 3 (eingerückt): Commentary  Import-Datum ──────────────
-            row3 = tk.Frame(self._gdwh_list_frame, bg=T["chk_bg"])
+            row3 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row3.pack(fill="x", padx=30, pady=(0, 2))
 
             parts3 = []
@@ -1872,7 +1983,9 @@ class KryDeleteApp(tk.Tk):
                 bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
             ).pack(side="left")
 
-        self._gdwh_fetch_btn.config(state="normal")
+        self._gdwh_loaded_once = True
+        self._gdwh_fetch_btn.config(
+            state="normal", text=self._GDWH_FETCH_BTN_LABEL_RELOAD)
         st = "normal" if enriched else "disabled"
         self._gdwh_sel_all_btn.config(state=st)
         self._gdwh_sel_none_btn.config(state=st)
@@ -1958,7 +2071,7 @@ class KryDeleteApp(tk.Tk):
             year_found = False
             if match:
                 for src in (match.get("stac_datetime", ""), match.get("year", "")):
-                    m = re.search(r"\b(20\d{2})\b", src)
+                    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
                     if m:
                         y = m.group(1)
                         if y not in _yrs:
@@ -1972,7 +2085,7 @@ class KryDeleteApp(tk.Tk):
                 if match.get("auftragstyp") and match["auftragstyp"] not in _typs:
                     _typs.append(match["auftragstyp"])
             if not year_found:
-                m = re.search(r"\b(20\d{2})\b", gdwh_import_date(imp))
+                m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
                 if m and m.group(1) not in _yrs:
                     _yrs.append(m.group(1))
 
@@ -2038,12 +2151,41 @@ class KryDeleteApp(tk.Tk):
             text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"))
         self.after(0, lambda: self._gdwh_fetch_btn.config(state="normal"))
         self.after(0, lambda: self._set_gdwh_env_controls_locked(False))
+        self.after(0, lambda: self._gdwh_remove_deleted_rows(ok_list))
         self.after(0, lambda: messagebox.showinfo(
             "GDWH Löschung abgeschlossen",
             f"Erfolgreich:    {len(ok_list)}\n"
             f"Fehlgeschlagen: {len(fail_list)}"
             f"{note}",
         ))
+
+    def _gdwh_remove_deleted_rows(self, ok_pkg_ids: List[str]):
+        """Entfernt erfolgreich zum Löschen eingereichte Packages aus der
+        Liste UND aus _gdwh_enriched/_gdwh_imports, damit ein späterer
+        Jahres-Filterwechsel (_gdwh_apply_filter() ruft _gdwh_populate_list()
+        erneut auf) sie nicht aus den noch alten Rohdaten wieder aufleben
+        lässt. Die GDWH-Löschung läuft serverseitig asynchron (Job) – ein
+        erneutes Anzeigen/Anklicken hier wäre ohnehin nur ein redundanter
+        zweiter Löschauftrag auf dasselbe Package."""
+        ok_ids = set(ok_pkg_ids)
+        if not ok_ids:
+            return
+        for pkg_id in ok_ids:
+            w = self._gdwh_row_widgets.pop(pkg_id, None)
+            if w is not None:
+                w.destroy()
+            self._gdwh_selection.pop(pkg_id, None)
+
+        if hasattr(self, "_gdwh_enriched"):
+            self._gdwh_enriched = [
+                (imp, match) for imp, match in self._gdwh_enriched
+                if gdwh_import_id(imp) not in ok_ids
+            ]
+        self._gdwh_imports = [
+            imp for imp in self._gdwh_imports if gdwh_import_id(imp) not in ok_ids
+        ]
+
+        self._gdwh_update_preview()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Hilfsfunktionen
@@ -2107,7 +2249,11 @@ class KryDeleteApp(tk.Tk):
         if self._spinner_job is not None:
             self.after_cancel(self._spinner_job)
             self._spinner_job = None
-        self._load_btn.config(text=self._LOAD_BTN_LABEL)
+        self._load_btn.config(text=self._current_load_btn_label())
+
+    def _current_load_btn_label(self) -> str:
+        return (self._LOAD_BTN_LABEL_RELOAD if self._items_loaded_once
+                else self._LOAD_BTN_LABEL)
 
     def _log_write(self, text: str):
         def _do():

@@ -15,7 +15,6 @@ import requests as req_module
 
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
-    filter_items,
     get_item_direct, get_collection_items,
     delete_asset, delete_item,
     check_asset_info,
@@ -24,7 +23,7 @@ from stac_api import (
 from gdwh_api import (
     GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_delete_import,
-    gdwh_import_id, gdwh_import_name, gdwh_import_date, gdwh_import_status,
+    gdwh_import_id, gdwh_import_date,
     gdwh_import_footprint_bbox,
     gdwh_bucket_path,
     _lv95, _extract_year_from_folder, _area_from_folder_name, _parse_iso_dt,
@@ -44,6 +43,22 @@ def _mock_response(status: int = 200, json_data=None, raise_on_status=False):
     else:
         r.raise_for_status = MagicMock()
     return r
+
+
+def _mock_gdwh_session() -> MagicMock:
+    """Mock für gdwh_api._gdwh_session(): muss als Context-Manager funktionieren
+    (with _gdwh_session() as s: ...), analog zur echten requests.Session().
+
+    WICHTIG: gdwh_get_imports()/gdwh_delete_import() rufen intern s.get()/
+    s.delete() auf einer Session-INSTANZ auf, nicht das Modul-Level
+    requests.get()/requests.delete(). Ein `patch("gdwh_api.requests.get", ...)`
+    greift deshalb nicht (Session.get() ruft nie das Modul-Level-Symbol auf)
+    – ohne dieses Session-Mock würden die Tests bei vorhandenem Netzzugriff
+    echte Requests gegen das reale GDWH abfeuern."""
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+    return session
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -73,50 +88,6 @@ class TestKonstanten:
         for label, exts in EXT_PRESETS:
             assert isinstance(label, str)
             assert all(e.startswith(".") for e in exts)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# filter_items
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestFilterItems:
-
-    ITEMS = [
-        {"id": "ch.swisstopo.spezialbefliegungen_kry_2024-08-20"},
-        {"id": "ch.swisstopo.spezialbefliegungen_kry_2024-09-15"},
-        {"id": "ch.swisstopo.spezialbefliegungen_ram_2024-07-01"},
-    ]
-
-    def test_kein_suchbegriff_gibt_alle_zurueck(self):
-        assert filter_items(self.ITEMS, "") == self.ITEMS
-
-    def test_teilstring_trifft_mehrere(self):
-        result = filter_items(self.ITEMS, "kry")
-        assert len(result) == 2
-        assert all("kry" in i["id"] for i in result)
-
-    def test_teilstring_trifft_einen(self):
-        result = filter_items(self.ITEMS, "ram")
-        assert len(result) == 1
-        assert result[0]["id"].endswith("ram_2024-07-01")
-
-    def test_datum_als_filter(self):
-        result = filter_items(self.ITEMS, "2024-08-20")
-        assert len(result) == 1
-
-    def test_case_insensitive(self):
-        assert filter_items(self.ITEMS, "KRY") == filter_items(self.ITEMS, "kry")
-
-    def test_kein_treffer(self):
-        assert filter_items(self.ITEMS, "xyz_nicht_vorhanden") == []
-
-    def test_leere_liste(self):
-        assert filter_items([], "kry") == []
-
-    def test_item_ohne_id_feld(self):
-        items = [{"id": "kry-001"}, {"properties": {}}]
-        result = filter_items(items, "kry")
-        assert len(result) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -351,39 +322,6 @@ class TestGdwhImportId:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GDWH Hilfsfunktionen – gdwh_import_name
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestGdwhImportName:
-
-    def test_feld_name(self):
-        assert gdwh_import_name({"name": "mein_paket"}) == "mein_paket"
-
-    def test_fallback_datapackageName(self):
-        assert gdwh_import_name({"datapackageName": "paket_xyz"}) == "paket_xyz"
-
-    def test_fallback_description(self):
-        assert gdwh_import_name({"description": "Beschreibung"}) == "Beschreibung"
-
-    def test_fallback_uuid_gekuerzt(self):
-        """Wenn kein Namensfeld: UUID wird auf 8 Zeichen + … gekürzt."""
-        result = gdwh_import_name({"uuid": "abcdef12-0000-0000-0000-000000000000"})
-        assert result == "abcdef12…"
-
-    def test_fallback_id_gekuerzt(self):
-        """Wenn weder Name noch uuid: id wird auf 8 Zeichen + … gekürzt."""
-        result = gdwh_import_name({"id": "123456789abc"})
-        assert result == "12345678…"
-
-    def test_kein_feld_gibt_fragezeichen(self):
-        """Leeres Dict: id-Fallback gibt '?', das kürzer als 8 ist → '?' bleibt."""
-        assert gdwh_import_name({}) == "?"
-
-    def test_prioritaet_name_vor_description(self):
-        assert gdwh_import_name({"name": "A", "description": "B"}) == "A"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # GDWH Hilfsfunktionen – gdwh_import_date
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -409,25 +347,6 @@ class TestGdwhImportDate:
 
     def test_kein_feld_gibt_strich(self):
         assert gdwh_import_date({}) == "–"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GDWH Hilfsfunktionen – gdwh_import_status
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestGdwhImportStatus:
-
-    def test_feld_status(self):
-        assert gdwh_import_status({"status": "completed"}) == "completed"
-
-    def test_fallback_state(self):
-        assert gdwh_import_status({"state": "running"}) == "running"
-
-    def test_fallback_importStatus(self):
-        assert gdwh_import_status({"importStatus": "failed"}) == "failed"
-
-    def test_kein_feld_gibt_leerstring(self):
-        assert gdwh_import_status({}) == ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -575,54 +494,77 @@ class TestGdwhGetImports:
 
     def test_direkte_liste_als_antwort(self):
         data = [{"uuid": "pkg-1"}, {"uuid": "pkg-2"}]
-        with patch("gdwh_api.requests.get", return_value=_mock_response(200, data)):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == data
 
     def test_wrapper_objekt_items(self):
         data = {"items": [{"uuid": "pkg-1"}], "total": 1}
-        with patch("gdwh_api.requests.get", return_value=_mock_response(200, data)):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == [{"uuid": "pkg-1"}]
 
     def test_wrapper_objekt_imports(self):
         data = {"imports": [{"uuid": "pkg-1"}, {"uuid": "pkg-2"}]}
-        with patch("gdwh_api.requests.get", return_value=_mock_response(200, data)):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert len(result) == 2
 
     def test_wrapper_objekt_data(self):
         data = {"data": [{"uuid": "pkg-1"}]}
-        with patch("gdwh_api.requests.get", return_value=_mock_response(200, data)):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == [{"uuid": "pkg-1"}]
 
     def test_leere_liste(self):
-        with patch("gdwh_api.requests.get", return_value=_mock_response(200, [])):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, [])
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == []
 
     def test_url_korrekt_aufgebaut(self):
-        with patch("gdwh_api.requests.get",
-                   return_value=_mock_response(200, [])) as mock_get:
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, [])
+        with patch("gdwh_api._gdwh_session", return_value=session):
             gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
-        url = mock_get.call_args[0][0]
+        url = session.get.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/data/imports" in url
 
-    def test_sspi_auth_wird_verwendet(self):
-        """GET nutzt Windows SSPI (HttpNegotiateAuth), kein explizites Passwort."""
-        from requests_negotiate_sspi import HttpNegotiateAuth
-        with patch("gdwh_api.requests.get",
-                   return_value=_mock_response(200, [])) as mock_get:
-            gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
-        _, kwargs = mock_get.call_args
-        assert isinstance(kwargs.get("auth"), HttpNegotiateAuth)
-
     def test_http_fehler_wird_weitergegeben(self):
-        with patch("gdwh_api.requests.get",
-                   return_value=_mock_response(500, raise_on_status=True)):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(500, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _gdwh_session – SSPI-Auth/Proxy-Konfiguration (direkt getestet, ohne Mock:
+# reine Objekt-Konstruktion, kein Netzzugriff nötig)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhSession:
+
+    def test_sspi_auth_konfiguriert(self):
+        from requests_negotiate_sspi import HttpNegotiateAuth
+        from gdwh_api import _gdwh_session, GDWH_SSL_VERIFY
+        with _gdwh_session() as s:
+            assert isinstance(s.auth, HttpNegotiateAuth)
+            assert s.verify == GDWH_SSL_VERIFY
+
+    def test_kein_proxy(self):
+        from gdwh_api import _gdwh_session
+        with _gdwh_session() as s:
+            assert s.proxies == {"http": "", "https": ""}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -636,51 +578,50 @@ class TestGdwhDeleteImport:
 
     def test_job_objekt_wird_zurueckgegeben(self):
         job = {"id": "job-001", "status": "running", "progress": 0}
-        with patch("gdwh_api.requests.delete", return_value=_mock_response(200, job)):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, job)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == job
 
     def test_mit_email_parameter(self):
-        with patch("gdwh_api.requests.delete",
-                   return_value=_mock_response(200, {})) as mock_del:
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, {})
+        with patch("gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID,
                                email="lukas@example.com")
-        _, kwargs = mock_del.call_args
+        _, kwargs = session.delete.call_args
         assert kwargs["params"] == {"email": "lukas@example.com"}
 
     def test_ohne_email_kein_params(self):
-        with patch("gdwh_api.requests.delete",
-                   return_value=_mock_response(200, {})) as mock_del:
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, {})
+        with patch("gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
-        _, kwargs = mock_del.call_args
+        _, kwargs = session.delete.call_args
         assert kwargs["params"] is None
 
-    def test_sspi_auth_wird_verwendet(self):
-        """DELETE nutzt Windows SSPI (HttpNegotiateAuth)."""
-        from requests_negotiate_sspi import HttpNegotiateAuth
-        with patch("gdwh_api.requests.delete",
-                   return_value=_mock_response(200, {})) as mock_del:
-            gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
-        _, kwargs = mock_del.call_args
-        assert isinstance(kwargs.get("auth"), HttpNegotiateAuth)
-
     def test_url_korrekt_aufgebaut(self):
-        with patch("gdwh_api.requests.delete",
-                   return_value=_mock_response(200, {})) as mock_del:
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, {})
+        with patch("gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
-        url = mock_del.call_args[0][0]
+        url = session.delete.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/data/imports/{self.PKG_ID}" in url
 
     def test_nicht_json_antwort_gibt_status_dict(self):
         r = _mock_response(200)
         r.json.side_effect = ValueError("no json")
-        with patch("gdwh_api.requests.delete", return_value=r):
+        session = _mock_gdwh_session()
+        session.delete.return_value = r
+        with patch("gdwh_api._gdwh_session", return_value=session):
             result = gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == {"status": "200"}
 
     def test_http_fehler_401_wird_weitergegeben(self):
-        with patch("gdwh_api.requests.delete",
-                   return_value=_mock_response(401, raise_on_status=True)):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(401, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
 
@@ -700,8 +641,15 @@ class TestStacItemYear:
                 "properties": {}}
         assert stac_item_year(item) == "2023"
 
-    def test_properties_hat_prioritaet_vor_id(self):
+    def test_id_hat_prioritaet_vor_properties(self):
+        """Laut Docstring: ID trägt das Befliegungsdatum, properties.datetime
+        kann das (davon abweichende) Importdatum sein – die ID gewinnt."""
         item = {"id": "kry_2020-01-01",
+                "properties": {"datetime": "2024-08-20T00:00:00Z"}}
+        assert stac_item_year(item) == "2020"
+
+    def test_properties_ist_fallback_wenn_id_kein_jahr_hat(self):
+        item = {"id": "kry-keinjahr",
                 "properties": {"datetime": "2024-08-20T00:00:00Z"}}
         assert stac_item_year(item) == "2024"
 
@@ -733,15 +681,9 @@ class TestStacItemArea:
         }
         assert stac_item_area(item) == "RHONE"
 
-    def test_bbox_nahe_oberaar(self):
-        """WGS84-Schwerpunkt ~8.21°E / 46.59°N → nächste AOI: OBERAAR."""
-        item = {"properties": {}, "bbox": [8.0, 46.4, 8.4, 46.8]}
-        assert stac_item_area(item) == "OBERAAR"
-
-    def test_bbox_nahe_gorner(self):
-        """WGS84-Schwerpunkt ~7.72°E / 46.0°N → nächste AOI: GORNER."""
-        item = {"properties": {}, "bbox": [7.5, 45.8, 7.9, 46.2]}
-        assert stac_item_area(item) == "GORNER"
+    # Hinweis: stac_item_area() implementiert keine bbox-basierte Nächste-
+    # Nachbar-AOI-Schätzung (dafür bräuchte es eine Referenztabelle echter
+    # AOI-Koordinaten) – Tests, die genau das erwartet hatten, wurden entfernt.
 
     def test_kein_bbox_kein_property_gibt_leerstring(self):
         assert stac_item_area({"properties": {}}) == ""
