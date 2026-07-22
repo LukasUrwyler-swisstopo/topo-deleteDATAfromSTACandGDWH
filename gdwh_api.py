@@ -148,6 +148,22 @@ def gdwh_import_date(imp: Dict) -> str:
     return "–"
 
 
+def gdwh_import_status(imp: Dict) -> str:
+    """Extrahiert den Lebenszyklus-Status eines DataPackages (z.B. 'Imported').
+
+    Wichtig für die Löschung: DELETE /imports/{id} schlägt fehl, wenn der
+    Status nicht 'Imported' ist (siehe Fehlermeldung "must have the status
+    'Imported' to be deleted"). GET /imports liefert DataPackages aber
+    unabhängig vom Status zurück – ein bereits zur Löschung eingereichtes
+    oder gelöschtes Package bleibt also in der Liste sichtbar, nur mit
+    geändertem Status."""
+    for key in ("status", "state", "importStatus", "dataPackageStatus"):
+        val = imp.get(key)
+        if val:
+            return str(val)
+    return "?"
+
+
 # ─── Bucket-Scan & XML-Parsing ───────────────────────────────────────────────
 
 _BUCKET_BASE = r"\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest"

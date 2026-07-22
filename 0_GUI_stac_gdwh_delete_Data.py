@@ -39,7 +39,7 @@ from stac_api import (
 from gdwh_api import (
     GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
     gdwh_get_imports, gdwh_delete_import,
-    gdwh_import_id, gdwh_import_date,
+    gdwh_import_id, gdwh_import_date, gdwh_import_status,
     gdwh_import_footprint_bbox,
     gdwh_scan_bucket, gdwh_match_folder, gdwh_bucket_path,
 )
@@ -1855,6 +1855,7 @@ class KryDeleteApp(tk.Tk):
     def _gdwh_populate_list(self, enriched: List[Tuple]):
         self._gdwh_clear_list()
         T = DARK if self._dark else LIGHT
+        self._gdwh_total_loaded = len(enriched)
 
         if not enriched:
             tk.Label(
@@ -1879,9 +1880,17 @@ class KryDeleteApp(tk.Tk):
             return int(m.group(1)) if m else 0
 
         for imp, match in sorted(enriched, key=_year_key, reverse=True):
-            pkg_id   = gdwh_import_id(imp)
-            pkg_date = gdwh_import_date(imp)
-            pkg_bbox = gdwh_import_footprint_bbox(imp)
+            pkg_id     = gdwh_import_id(imp)
+            pkg_date   = gdwh_import_date(imp)
+            pkg_bbox   = gdwh_import_footprint_bbox(imp)
+            pkg_status = gdwh_import_status(imp)
+            # GET /imports liefert DataPackages unabhängig vom Status zurück –
+            # ein bereits gelöschtes/im Löschvorgang befindliches Package bleibt
+            # also sichtbar (nur mit geändertem Status). DELETE schlägt für
+            # solche Packages ohnehin ab ("must have status 'Imported'"),
+            # daher hier schon die Checkbox sperren statt einen erneuten,
+            # zwangsläufig fehlschlagenden Löschversuch zuzulassen.
+            deletable = pkg_status.lower() == "imported"
 
             auftragstyp   = match.get("auftragstyp", "")  if match else ""
             area          = match.get("area", "")          if match else ""
@@ -1904,8 +1913,13 @@ class KryDeleteApp(tk.Tk):
             area_suffix = ""
 
             var = tk.BooleanVar(value=False)
-            var.trace_add("write", lambda *_: self._gdwh_on_checkbox_change())
-            self._gdwh_selection[pkg_id] = var
+            if deletable:
+                # Nur löschbare (status == 'Imported') Packages landen in der
+                # Auswahl-Map – so können "Alle auswählen" und der Start der
+                # Löschung ein nicht mehr löschbares Package gar nicht erst
+                # erfassen, unabhängig vom (gesperrten) Checkbox-Widget.
+                var.trace_add("write", lambda *_: self._gdwh_on_checkbox_change())
+                self._gdwh_selection[pkg_id] = var
 
             # Container für alle 3 Zeilen dieses Packages – erlaubt, die Zeile
             # nach erfolgreicher Löschung gezielt zu entfernen (statt die ganze
@@ -1914,12 +1928,12 @@ class KryDeleteApp(tk.Tk):
             entry_frame.pack(fill="x")
             self._gdwh_row_widgets[pkg_id] = entry_frame
 
-            # ── Zeile 1: Jahr  AREA  GDS-Key ─────────────────────────────────
+            # ── Zeile 1: Jahr  AREA  GDS-Key  Status ─────────────────────────
             row1 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row1.pack(fill="x", padx=6, pady=(5, 0))
 
             tk.Checkbutton(
-                row1, variable=var,
+                row1, variable=var, state="normal" if deletable else "disabled",
                 bg=T["chk_bg"], fg=T["fg"], selectcolor=T["input"],
                 activebackground=T["chk_bg"], activeforeground=T["fg"],
             ).pack(side="left")
@@ -1927,13 +1941,16 @@ class KryDeleteApp(tk.Tk):
             tk.Label(
                 row1, text=year if year else "????",
                 font=("Cascadia Mono", 9, "bold"),
-                bg=T["chk_bg"], fg=T["fg"], anchor="w", width=5,
+                bg=T["chk_bg"], fg=T["fg"] if deletable else T["fg_dim"],
+                anchor="w", width=5,
             ).pack(side="left")
 
             tk.Label(
                 row1, text=(area + area_suffix) if area else pkg_id[:12] + "…",
                 font=("Cascadia Mono", 9, "bold"),
-                bg=T["chk_bg"], fg=area_color if area else T["fg_dim"], anchor="w",
+                bg=T["chk_bg"],
+                fg=(area_color if area else T["fg_dim"]) if deletable else T["fg_dim"],
+                anchor="w",
             ).pack(side="left")
 
             gds_key = getattr(self, "_gdwh_current_gds_key", "")
@@ -1942,6 +1959,13 @@ class KryDeleteApp(tk.Tk):
                     row1, text=f"    [{gds_key}]",
                     font=("Cascadia Mono", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
+                ).pack(side="left")
+
+            if not deletable:
+                tk.Label(
+                    row1, text=f"    ⚠ Status: {pkg_status}  (nicht löschbar)",
+                    font=("Segoe UI", 8, "italic"),
+                    bg=T["chk_bg"], fg=T["hint"], anchor="w",
                 ).pack(side="left")
 
             # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime ─────────
@@ -2004,10 +2028,14 @@ class KryDeleteApp(tk.Tk):
             var.set(False)
 
     def _gdwh_update_preview(self):
-        total    = len(self._gdwh_selection)
-        selected = sum(v.get() for v in self._gdwh_selection.values())
+        total       = getattr(self, "_gdwh_total_loaded", len(self._gdwh_selection))
+        deletable   = len(self._gdwh_selection)
+        selected    = sum(v.get() for v in self._gdwh_selection.values())
+        locked_note = f"  |  {total - deletable} gesperrt (Status ≠ Imported)" \
+                      if total > deletable else ""
         self._gdwh_preview_lbl.configure(
             text=f"{total} DataPackage(s) geladen  |  {selected} ausgewählt zum Löschen"
+                 f"{locked_note}"
         )
         self._gdwh_del_btn.config(
             text=f"Ausgewählte DataPackages ({selected}) löschen …",
