@@ -38,10 +38,10 @@ from stac_api import (
 )
 from gdwh_api import (
     GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
-    gdwh_get_imports, gdwh_delete_import,
+    gdwh_get_imports, gdwh_delete_import, gdwh_cleanup_data_package,
     gdwh_import_id, gdwh_import_date, gdwh_import_status,
     gdwh_import_footprint_bbox,
-    gdwh_scan_bucket, gdwh_match_folder, gdwh_bucket_path,
+    gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,
 )
 
 # ─── Farbpaletten ─────────────────────────────────────────────────────────────
@@ -1784,22 +1784,23 @@ class KryDeleteApp(tk.Tk):
             self._gdwh_imports = imports
             self._gdwh_log_write(f"[GDWH] {len(imports)} DataPackage(s) gefunden.\n")
 
-            # Bucket scannen und Imports mit XML-Metadaten anreichern
-            env = self._gdwh_env_var.get()
-            bucket = gdwh_bucket_path(env, gds_key)
-            self._gdwh_log_write(f"[GDWH] Scanne Bucket: {bucket} …\n")
-            bucket_entries = gdwh_scan_bucket(env, gds_key, log_fn=self._gdwh_log_write)
+            # FileMetadata laden und Imports damit anreichern (Area/Jahr/LineID
+            # liegen dauerhaft im GDWH – unabhängig vom Ingest-Bucket, der nach
+            # erfolgreichem Import regelmässig geleert wird).
+            self._gdwh_log_write(f"[GDWH] Lade FileMetadata für GDS-Key: {gds_key} …\n")
+            file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, gds_key)
             self._gdwh_log_write(
-                f"[GDWH] {len(bucket_entries)} Ordner im Bucket gefunden.\n")
+                f"[GDWH] {len(file_metadata)} FileMetadata-Eintrag/Einträge gefunden.\n")
+            meta_index = gdwh_index_file_metadata_by_import(file_metadata)
 
-            # Jedem Import den passenden Ordner zuordnen
+            # Jedem Import die passenden FileMetadata-Attribute zuordnen
             enriched = []
             for imp in imports:
-                match = gdwh_match_folder(imp, bucket_entries)
+                match = meta_index.get(gdwh_import_id(imp))
                 enriched.append((imp, match))
                 if match:
                     self._gdwh_log_write(
-                        f"  → {gdwh_import_date(imp)}  ↔  {match['folder']}"
+                        f"  → {gdwh_import_date(imp)}  Jahr={match['year']}"
                         + (f"  [{match['area']}]" if match['area'] else "") + "\n")
 
             self._gdwh_enriched = enriched
@@ -1822,10 +1823,19 @@ class KryDeleteApp(tk.Tk):
                 if match:
                     for src in (match.get("stac_datetime", ""), match.get("year", "")):
                         m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
-                        if m and m.group(1) == year:
-                            return True
+                        if m:
+                            return m.group(1) == year
                 m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
-                return bool(m and m.group(1) == year)
+                if m:
+                    return m.group(1) == year
+                # Kein Bucket-Match (z.B. Import-Ordner bereits geleert) und
+                # kein auswertbares importDate: Jahr unbekannt. Package trotz
+                # aktivem Jahresfilter NICHT ausblenden – sonst verschwinden
+                # tatsächlich im GDWH vorhandene Packages spurlos aus der
+                # Liste, sobald der Ingest-Bucket regelmässig geleert wurde.
+                # Wird in der Liste als "????" markiert, siehe _year_key/-
+                # _gdwh_populate_list.
+                return True
             data = [item for item in data if _year_matches(item)]
         self._gdwh_populate_list(data)
 
@@ -1895,7 +1905,7 @@ class KryDeleteApp(tk.Tk):
             auftragstyp   = match.get("auftragstyp", "")  if match else ""
             area          = match.get("area", "")          if match else ""
             stac_datetime = match.get("stac_datetime", "") if match else ""
-            commentary    = match.get("commentary", "")    if match else ""
+            line_id       = match.get("line_id", "")       if match else ""
 
             # Jahr für Anzeige: stac_datetime > Ordnername > importDate
             year = ""
@@ -1968,9 +1978,10 @@ class KryDeleteApp(tk.Tk):
                     bg=T["chk_bg"], fg=T["hint"], anchor="w",
                 ).pack(side="left")
 
-            # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime ─────────
+            # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime  LineID ──
             row2 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row2.pack(fill="x", padx=30, pady=0)
+            row2_has_content = False
 
             if auftragstyp:
                 tk.Label(
@@ -1978,31 +1989,36 @@ class KryDeleteApp(tk.Tk):
                     font=("Cascadia Mono", 8, "bold"),
                     bg=T["chk_bg"], fg=T["ok"], anchor="w",
                 ).pack(side="left")
+                row2_has_content = True
 
             if stac_datetime:
                 tk.Label(
-                    row2, text=("    " if auftragstyp else "") + stac_datetime,
+                    row2, text=("    " if row2_has_content else "") + stac_datetime,
                     font=("Segoe UI", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
                 ).pack(side="left")
+                row2_has_content = True
             elif not auftragstyp and pkg_bbox:
                 tk.Label(
                     row2, text=pkg_bbox,
                     font=("Segoe UI", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
                 ).pack(side="left")
+                row2_has_content = True
 
-            # ── Zeile 3 (eingerückt): Commentary  Import-Datum ──────────────
+            if line_id:
+                tk.Label(
+                    row2, text=("    " if row2_has_content else "") + f"LineID: {line_id}",
+                    font=("Segoe UI", 8),
+                    bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
+                ).pack(side="left")
+
+            # ── Zeile 3 (eingerückt): Import-Datum ───────────────────────────
             row3 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row3.pack(fill="x", padx=30, pady=(0, 2))
 
-            parts3 = []
-            if commentary:
-                parts3.append(commentary)
-            parts3.append(pkg_date)
-
             tk.Label(
-                row3, text="   ·   ".join(parts3),
+                row3, text=pkg_date,
                 font=("Segoe UI", 8),
                 bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
             ).pack(side="left")
@@ -2153,6 +2169,26 @@ class KryDeleteApp(tk.Tk):
                 session_logger.info(
                     f"[GDWH OK] {env}/{gds_key}/{pkg_id}  Job: {job_id}")
                 ok_list.append(pkg_id)
+
+                # Bucket aufräumen: falls noch ein DataPackage-Ordner mit
+                # derselben ID im Ingest-Bucket liegt (Import erfolgt, aber
+                # nie aufgeräumt), jetzt zusätzlich löschen – sonst bleibt
+                # das Package im GDWH-Portal als "hängendes" DataPackage
+                # sichtbar und blockiert einen sauberen Neu-Import.
+                try:
+                    cleaned = gdwh_cleanup_data_package(base_url, gds_key, pkg_id)
+                    if cleaned is not None:
+                        self._gdwh_log_write(
+                            "        Bucket-DataPackage ebenfalls gelöscht.\n")
+                        session_logger.info(
+                            f"[GDWH BUCKET CLEANUP OK] {env}/{gds_key}/{pkg_id}")
+                except Exception as cleanup_exc:
+                    self._gdwh_log_write(
+                        f"        [WARNUNG] Bucket-DataPackage konnte nicht "
+                        f"gelöscht werden: {cleanup_exc}\n")
+                    session_logger.warning(
+                        f"[GDWH BUCKET CLEANUP FAIL] {env}/{gds_key}/{pkg_id}  "
+                        f"→  {cleanup_exc}")
             except Exception as exc:
                 self._gdwh_log_write(f"  [FAIL] Package: {pkg_id}  →  {exc}\n")
                 session_logger.warning(

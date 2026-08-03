@@ -131,6 +131,49 @@ def gdwh_delete_import(base_url: str, gds_key: str,
         return {"status": str(r.status_code)}
 
 
+def gdwh_delete_data_package(base_url: str, gds_key: str, datapackage_id: str) -> Dict:
+    """
+    Löscht den DataPackage-Ordner im Ingest-Bucket (Aufräumschritt, siehe
+    Swagger: "typically after the DataPackage has been successfully
+    imported"). Rührt NICHT die bereits importierten Daten im GDWH an –
+    nur den Bucket-Ordner, damit im GDWH-Portal kein "hängendes" DataPackage
+    mehr angezeigt wird und der Bucket für neue, saubere Imports frei ist.
+
+    Die datapackageId ist identisch mit der uuid aus /data/imports (per
+    Swagger GET /dataPackages/{id} verifiziert – derselbe Zwei-Schritt-Import-
+    Prozess: POST /dataPackages legt sie an, POST /data/imports importiert
+    dasselbe Package unter derselben ID).
+    """
+    url = f"{base_url}api/geodatasets/{gds_key}/dataPackages/{datapackage_id}"
+    with _gdwh_session() as s:
+        r = s.delete(url, timeout=(30, 60))
+    r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        return {"status": str(r.status_code)}
+
+
+def gdwh_cleanup_data_package(base_url: str, gds_key: str,
+                               datapackage_id: str) -> Optional[Dict]:
+    """
+    Best-effort-Aufräumen des Bucket-DataPackage nach einer GDWH-Löschung.
+
+    Gibt None zurück, wenn kein DataPackage mit dieser ID (mehr) existiert
+    (HTTP 404) – das ist der Normalfall, wenn der Bucket-Ordner bereits
+    automatisch geräumt wurde, und explizit KEIN Fehler. Andere Fehler
+    (z.B. Berechtigung, Netzwerk) werden weitergereicht, damit der Aufrufer
+    sie vom eigentlichen (bereits erfolgreichen) Lösch-Job unterscheiden und
+    separat protokollieren kann.
+    """
+    try:
+        return gdwh_delete_data_package(base_url, gds_key, datapackage_id)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+
+
 def gdwh_import_id(imp: Dict) -> str:
     """Extrahiert die DataPackage-ID (UUID) aus einem Import-Objekt."""
     for key in ("uuid", "id", "datapackageId", "package_id", "importId"):
@@ -164,7 +207,14 @@ def gdwh_import_status(imp: Dict) -> str:
     return "?"
 
 
-# ─── Bucket-Scan & XML-Parsing ───────────────────────────────────────────────
+# ─── XML-Parsing & Bucket-Pfad (Utilities) ───────────────────────────────────
+#
+# Die App reichert Imports nicht mehr über einen Bucket-Scan an (siehe
+# FileMetadata-Suche weiter unten – der Ingest-Bucket wird nach erfolgreichem
+# Import regelmässig geleert und ist daher als Metadatenquelle unzuverlässig).
+# gdwh_bucket_path()/_extract_year_from_folder()/_area_from_folder_name()
+# bleiben als eigenständige, getestete Utilities erhalten (z.B. für manuelle
+# Bucket-Diagnose), werden von der GUI aktuell aber nicht mehr aufgerufen.
 
 _BUCKET_BASE = r"\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest"
 
@@ -177,7 +227,6 @@ _GDS_BUCKET_TYPE = {
 
 # XML-Feldnamen für Metadaten-Extraktion (Vergleich erfolgt lowercase)
 _XML_AREA_TAGS        = ("area",)
-_XML_ITEMNAME_TAGS    = ("stacitemname", "stac_item_name", "stacitemname", "itemname")
 _XML_LINEID_TAGS      = ("line_id", "lineid")
 _XML_COMMENTARY_TAGS  = ("commentary", "kommentar", "comment", "description")
 _XML_AUFTRAGSTYP_TAGS = ("auftragstyp", "auftragstype", "ordertype", "type")
@@ -240,151 +289,75 @@ def _area_from_folder_name(folder_name: str) -> str:
     return "_".join(area_parts)
 
 
-def _collect_xml_files(folder_path: str, max_depth: int = 2) -> List[str]:
-    """Sammelt alle XML-Dateien bis max_depth Ebenen tief."""
-    found = []
+# ─── FileMetadata-Suche (Metadatenquelle statt Bucket-Scan) ─────────────────
+#
+# GET /data/imports liefert nur uuid/gdsKey/importDate/footprint – keine
+# fachlichen Attribute. Der bisherige Bucket-Scan (gdwh_scan_bucket) versuchte
+# Area/Jahr/LineID stattdessen aus den Ingest-XML-Dateien im Bucket-Ordner zu
+# lesen. Das schlägt fehl, sobald der Bucket-Ordner geleert ist (Standard-
+# betrieb: Ingest-Buckets werden nach erfolgreichem Import regelmässig
+# geräumt) – das Package existiert dann weiterhin im GDWH, ist aber nicht mehr
+# zuordenbar.
+#
+# POST /fileMetadata/search liegt dauerhaft im GDWH (unabhängig vom Bucket)
+# und trägt bereits alle nötigen Attribute: temporalKey (Jahr), tileKey sowie
+# customAttributes – ein XML-Fragment mit denselben Feldern (Area, LineID,
+# Auftragstyp, Commentary, StacItemIdDatetime), die zuvor aus den Bucket-XMLs
+# gelesen wurden. Der Join zu einem Import läuft über importUuid == uuid.
 
-    def _scan(path, depth):
-        if depth < 0:
-            return
-        try:
-            for entry in os.scandir(path):
-                if entry.is_file() and entry.name.lower().endswith(".xml"):
-                    found.append(entry.path)
-                elif entry.is_dir():
-                    _scan(entry.path, depth - 1)
-        except OSError:
-            pass
-
-    _scan(folder_path, max_depth)
-    return found
+def gdwh_search_file_metadata(base_url: str, gds_key: str) -> List[Dict]:
+    """Holt die aktuellen FileMetadata-Einträge (mostRecent) für einen GDS-Key."""
+    url = f"{base_url}api/geodatasets/{gds_key}/fileMetadata/search"
+    payload = {"gdsKey": gds_key, "mostRecent": True}
+    with _gdwh_session() as s:
+        r = s.post(url, json=payload, timeout=(30, 60))
+    r.raise_for_status()
+    data = r.json()
+    return data if isinstance(data, list) else []
 
 
-def _read_folder_xml(folder_path: str, log_fn=None) -> Dict:
-    """Liest XML-Dateien im Ordner (bis 2 Ebenen tief) und extrahiert Metadaten."""
-    result = {
-        "area": "", "stacitemname": "", "line_id": "", "commentary": "",
-        "auftragstyp": "", "stac_datetime": "",
-    }
-    candidates = _collect_xml_files(folder_path, max_depth=2)
-    if log_fn and candidates:
-        log_fn(f"      XML-Dateien: {[os.path.basename(p) for p in candidates]}\n")
-    for xml_path in candidates:
-        try:
-            root = ET.parse(xml_path).getroot()
-            result["area"]          = _find_xml_value(root, _XML_AREA_TAGS)
-            result["stacitemname"]  = _find_xml_value(root, _XML_ITEMNAME_TAGS)
-            result["line_id"]       = _find_xml_value(root, _XML_LINEID_TAGS)
-            result["commentary"]    = _find_xml_value(root, _XML_COMMENTARY_TAGS)
-            result["auftragstyp"]   = _find_xml_value(root, _XML_AUFTRAGSTYP_TAGS)
-            result["stac_datetime"] = _find_xml_value(root, _XML_DATETIME_TAGS)
-            if log_fn:
-                log_fn(f"      → area={result['area']!r}  auftragstyp={result['auftragstyp']!r}"
-                       f"  stac_datetime={result['stac_datetime']!r}\n")
-            if any(result.values()):
-                break
-        except Exception as e:
-            if log_fn:
-                log_fn(f"      XML-Fehler {os.path.basename(xml_path)}: {e}\n")
-            continue
+def _parse_custom_attributes(xml_fragment: str) -> Dict:
+    """Parst das customAttributes-XML-Fragment eines FileMetadata-Eintrags.
+
+    Kein eigenständiges XML-Dokument (mehrere Wurzel-Tags aneinandergereiht),
+    daher künstliches Wurzelelement zum Parsen nötig."""
+    result = {"area": "", "line_id": "", "commentary": "", "auftragstyp": "", "stac_datetime": ""}
+    if not xml_fragment:
+        return result
+    try:
+        root = ET.fromstring(f"<root>{xml_fragment}</root>")
+    except ET.ParseError:
+        return result
+    result["area"]          = _find_xml_value(root, _XML_AREA_TAGS)
+    result["line_id"]       = _find_xml_value(root, _XML_LINEID_TAGS)
+    result["commentary"]    = _find_xml_value(root, _XML_COMMENTARY_TAGS)
+    result["auftragstyp"]   = _find_xml_value(root, _XML_AUFTRAGSTYP_TAGS)
+    result["stac_datetime"] = _find_xml_value(root, _XML_DATETIME_TAGS)
     return result
 
 
-def gdwh_scan_bucket(env: str, gds_key: str, log_fn=None) -> List[Dict]:
-    """
-    Scannt den GDWH-Bucket-Ordner und liefert für jeden Datenpaket-Unterordner
-    die XML-Metadaten und den Änderungszeitpunkt zurück.
+def gdwh_index_file_metadata_by_import(file_metadata: List[Dict]) -> Dict[str, Dict]:
+    """Baut ein Lookup importUuid → angereicherte Metadaten (Area, Jahr, LineID, …).
 
-    Returns:
-        Liste von Dicts: folder, area, stacitemname, line_id, commentary, mtime (datetime UTC)
-    """
-    root_path = gdwh_bucket_path(env, gds_key)
-    entries = []
-    if not os.path.exists(root_path):
-        if log_fn:
-            log_fn(f"  [Bucket] Pfad nicht erreichbar: {root_path}\n")
-        return entries
-    try:
-        for entry in os.scandir(root_path):
-            if not entry.is_dir():
-                continue
-            mtime = None
-            try:
-                mtime = datetime.fromtimestamp(
-                    entry.stat().st_mtime, tz=timezone.utc)
-            except OSError:
-                pass
-            if log_fn:
-                log_fn(f"  [Bucket] {entry.name}\n")
-            meta = _read_folder_xml(entry.path, log_fn=log_fn)
-
-            # Jahr: zuerst aus Ordnername, Fallback aus stac_datetime
-            year = _extract_year_from_folder(entry.name)
-            if not year and meta["stac_datetime"]:
-                m = re.search(r"(\d{4})", meta["stac_datetime"])
-                year = m.group(1) if m else ""
-
-            # AREA: aus XML, Fallback aus Ordnername
-            area = meta["area"] or _area_from_folder_name(entry.name)
-
-            entries.append({
-                "folder":        entry.name,
-                "area":          area,
-                "stacitemname":  meta["stacitemname"],
-                "line_id":       meta["line_id"],
-                "commentary":    meta["commentary"],
-                "auftragstyp":   meta["auftragstyp"],
-                "stac_datetime": meta["stac_datetime"],
-                "year":          year,
-                "mtime":         mtime,
-            })
-    except (OSError, PermissionError) as e:
-        if log_fn:
-            log_fn(f"  [Bucket] Zugriffsfehler: {e}\n")
-        return entries
-    return sorted(
-        entries,
-        key=lambda x: x["mtime"] or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-
-
-def gdwh_match_folder(imp: Dict, bucket_entries: List[Dict],
-                       max_diff_hours: float = 12.0,
-                       ambiguity_margin_hours: float = 1.0) -> Optional[Dict]:
-    """
-    Ordnet einem GDWH-Import den zeitlich nächstliegenden Bucket-Ordner zu.
-
-    Das GDWH-Import-Objekt enthält kein Feld, das direkt auf den Bucket-Ordner
-    verweist (kein sourceFolder/sourcePath/batchId o.ä.) – der Abgleich läuft
-    daher zwangsläufig über die Nähe von Import-Zeitpunkt zu Ordner-mtime und
-    bleibt eine Heuristik, kein verlässlicher Fremdschlüssel.
-
-    Um zu vermeiden, dass bei mehreren zeitlich nah beieinanderliegenden
-    Ordnern (z.B. Batch-Importe) ein falscher Ordner als vermeintlich sicherer
-    Treffer angezeigt wird, gilt ein Match nur dann als eindeutig, wenn der
-    zweitnächste Ordner um mindestens ambiguity_margin_hours weiter entfernt
-    liegt als der nächste. Andernfalls (oder wenn kein Ordner innerhalb von
-    max_diff_hours liegt) wird None zurückgegeben – lieber keine Metadaten
-    anzeigen als falsche.
-    """
-    import_dt = _parse_iso_dt(imp.get("importDate", ""))
-    if import_dt is None or not bucket_entries:
-        return None
-    timed = sorted(
-        (abs((import_dt - entry["mtime"]).total_seconds()), entry)
-        for entry in bucket_entries if entry["mtime"] is not None
-    )
-    if not timed:
-        return None
-    best_secs, best = timed[0]
-    if best_secs > max_diff_hours * 3600:
-        return None
-    if len(timed) > 1:
-        second_secs, _ = timed[1]
-        if (second_secs - best_secs) < ambiguity_margin_hours * 3600:
-            return None
-    return best
+    Ein Import kann mehrere FileMetadata-Einträge haben (z.B. je Kachel) – für
+    die Anzeige genügt ein repräsentativer Eintrag pro Import, der erste
+    Treffer wird verwendet."""
+    index: Dict[str, Dict] = {}
+    for fm in file_metadata:
+        import_uuid = fm.get("importUuid")
+        if not import_uuid or import_uuid in index:
+            continue
+        attrs = _parse_custom_attributes(fm.get("customAttributes", ""))
+        index[import_uuid] = {
+            "area":          attrs["area"],
+            "line_id":       attrs["line_id"],
+            "commentary":    attrs["commentary"] or fm.get("commentary", ""),
+            "auftragstyp":   attrs["auftragstyp"],
+            "stac_datetime": attrs["stac_datetime"],
+            "year":          str(fm.get("temporalKey") or ""),
+            "tile_key":      fm.get("tileKey", ""),
+        }
+    return index
 
 
 def _polygon_centroid(coords: List[Tuple[float, float]]) -> Tuple[float, float]:

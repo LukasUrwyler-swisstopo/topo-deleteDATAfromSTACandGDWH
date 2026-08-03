@@ -235,46 +235,39 @@ GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`, `SB_DSM_PUNKTWOLKE`) und `Imports lad
 
 Das Tool lädt alle DataPackages per API und reichert sie danach automatisch mit Metadaten an:
 
-#### Datenanreicherung via Bucket-Scan
+#### Datenanreicherung via FileMetadata-API
 
-Das Tool durchsucht den Netzwerk-Bucket des jeweiligen GDS-Key nach dem passenden DataPackage-Ordner:
+`GET /data/imports` liefert nur `uuid`/`gdsKey`/`importDate`/`footprint` – keine
+fachlichen Attribute. Das Tool ruft daher zusätzlich `POST /fileMetadata/search`
+für den GDS-Key ab und verknüpft jeden Import über `importUuid == uuid` mit dem
+passenden FileMetadata-Eintrag. Diese Attribute liegen dauerhaft im GDWH
+(unabhängig vom Ingest-Bucket, der nach erfolgreichem Import regelmässig
+geleert wird) – ein früherer Bucket-Scan-Ansatz wurde deshalb ersetzt: Sobald
+der Bucket-Ordner geleert war, liess sich kein Import mehr anreichern, obwohl
+die Daten weiterhin im GDWH vorhanden waren.
 
-```
-\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest\
-  BUCKET_INT\          (INT-Umgebung)
-    RASTER\SB_DOP\     ← z.B. für SB_DOP
-    RASTER\SB_DSM\
-    VECTOR\SB_DSM_PUNKTWOLKE\
-      2023_OBERAAR_DSM\
-        *.xml          ← XML-Metadaten werden hier gelesen
-```
+Aus dem `customAttributes`-Feld (ein XML-Fragment) sowie `temporalKey` werden folgende Felder extrahiert:
 
-Die Zuordnung erfolgt via Importdatum vs. Ordner-Änderungsdatum (±12 Stunden).  
-Aus den XML-Dateien werden folgende Felder extrahiert:
-
-| Feld | XML-Tag | Bedeutung |
+| Feld | Quelle | Bedeutung |
 |---|---|---|
-| Auftragstyp | `<Auftragstyp>` | `KRY` oder `RAM` |
-| AREA | `<AREA>` | AOI-Name (z.B. `OBERAAR`) |
-| StacItemIdDatetime | `<stacitemname>` / `<StacItemIdDatetime>` | STAC-Item-ID / Aufnahmedatum |
-| Commentary | `<Commentary>` | Freitext-Bemerkung |
-| Jahr | Ordnername (z.B. `2023_OBERAAR_DSM`) oder `<StacItemIdDatetime>` | Aufnahmejahr |
+| Auftragstyp | `<Auftragstyp>` in `customAttributes` | `KRY` oder `RAM` |
+| AREA | `<Area>` in `customAttributes` | AOI-Name (z.B. `OBERAAR`) |
+| LineID | `<LineID>` in `customAttributes` | Befliegungslinien-IDs |
+| StacItemIdDatetime | `<StacItemIdDatetime>` in `customAttributes` | Aufnahmedatum |
+| Jahr | `temporalKey` (FileMetadata) | Aufnahmejahr |
 
-#### Anzeige mit Bucket-Match
-
-```
-☐  [KRY]  OBERAAR  2023  2023_OBERAAR_DSM
-     ch.swisstopo.spezialbefliegungen_kry_2023-08-15  ·  Erstbefliegung  ·  2023-08-20 14:39
-```
-
-#### Anzeige ohne Bucket-Match (Fallback)
-
-Wenn kein passender Ordner gefunden wird, schätzt das Tool das AOI aus dem Footprint-Zentroid (LV95) und zeigt die Koordinaten:
+#### Anzeige mit FileMetadata-Match
 
 ```
-☐  OBERAAR (geschätzt)
-     LV95  E 2'657'636 / N 1'153'620  ·  2023-08-20 14:39
+☐  2023  OBERAAR
+     KRY    2023-08-15t102000
+     LineID: 20230815_1020_12504
+     2023-08-20 14:39
 ```
+
+#### Anzeige ohne FileMetadata-Match (Fallback)
+
+Wenn kein passender FileMetadata-Eintrag gefunden wird (z.B. sehr alte Imports), zeigt das Tool `????` als Jahr und die DataPackage-ID statt der AREA – das Package bleibt trotzdem in der Liste und ist löschbar, wird durch den Jahresfilter also nicht ausgeblendet.
 
 ---
 
@@ -303,6 +296,8 @@ Vor der Löschung erscheint ein **zweistufiger Sicherheitsdialog** analog zum ST
 
 Das Log protokolliert den gestarteten Lösch-Job pro Import mit Job-ID und initialem Status.
 
+Nach jeder erfolgreichen Import-Löschung räumt das Tool zusätzlich einen eventuell noch vorhandenen DataPackage-Ordner im Ingest-Bucket auf (`DELETE /dataPackages/{id}`, dieselbe ID wie der Import). Das betrifft nur den Bucket-Ordner, nicht die bereits gelöschten GDWH-Daten – so verschwindet das Package auch aus der DataPackages-Ansicht im GDWH-Portal, und der Bucket ist frei für einen sauberen Neu-Import. Existiert kein Bucket-Ordner mehr (Normalfall, wenn er bereits automatisch geräumt wurde), wird das ohne Fehlermeldung übersprungen; schlägt das Aufräumen aus einem anderen Grund fehl, erscheint eine Warnung im Log — die eigentliche GDWH-Löschung ist davon nicht betroffen.
+
 Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automatisch aus der Liste entfernt (kein manueller Reload nötig). Fehlgeschlagene Packages bleiben sichtbar und ausgewählt.
 
 ---
@@ -312,7 +307,7 @@ Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automat
 ```
 1.  Umgebung wählen (INT zum Testen, PROD für Live-Daten)
 2.  GDS-Key eingeben  →  [Imports laden]
-       → Liste wird mit Auftragstyp, AREA, Jahr und Commentary angereichert
+       → Liste wird mit Auftragstyp, AREA, Jahr und LineID angereichert
 3.  Zu löschende DataPackages ankreuzen
 4.  Optional: E-Mail für Job-Benachrichtigung eingeben
 5.  [Import Auswahl (n) löschen]  →  Sicherheitsdialog bestätigen
@@ -327,7 +322,7 @@ Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automat
 pytest test_functions.py -v
 ```
 
-92 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_bucket_path` und `check_asset_info`.
+111 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_search_file_metadata`, `gdwh_cleanup_data_package` und `check_asset_info`.
 
 ---
 

@@ -23,10 +23,13 @@ from stac_api import (
 from gdwh_api import (
     GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_delete_import,
+    gdwh_delete_data_package, gdwh_cleanup_data_package,
     gdwh_import_id, gdwh_import_date,
     gdwh_import_footprint_bbox,
     gdwh_bucket_path,
+    gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,
     _lv95, _extract_year_from_folder, _area_from_folder_name, _parse_iso_dt,
+    _parse_custom_attributes,
 )
 
 AUTH      = ("testuser", "testpass")
@@ -624,6 +627,206 @@ class TestGdwhDeleteImport:
         with patch("gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# gdwh_delete_data_package / gdwh_cleanup_data_package (gemockt)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhDeleteDataPackage:
+
+    GDS_KEY = "SB_DOP"
+    PKG_ID  = "2464aa63-3b47-477a-bd4c-82c0baebb71d"
+
+    def test_url_korrekt_aufgebaut(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, {})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        url = session.delete.call_args[0][0]
+        assert f"api/geodatasets/{self.GDS_KEY}/dataPackages/{self.PKG_ID}" in url
+
+    def test_erfolgreiche_antwort_wird_zurueckgegeben(self):
+        data = {"status": "deleted"}
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert result == data
+
+    def test_http_fehler_wird_weitergegeben(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(500, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            with pytest.raises(req_module.HTTPError):
+                gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+
+
+class TestGdwhCleanupDataPackage:
+
+    GDS_KEY = "SB_DOP"
+    PKG_ID  = "2464aa63-3b47-477a-bd4c-82c0baebb71d"
+
+    def test_erfolg_gibt_response_zurueck(self):
+        data = {"status": "deleted"}
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert result == data
+
+    def test_404_gibt_none_kein_fehler(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(404, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert result is None
+
+    def test_andere_http_fehler_werden_weitergegeben(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(500, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            with pytest.raises(req_module.HTTPError):
+                gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# gdwh_search_file_metadata (gemockt)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhSearchFileMetadata:
+
+    GDS_KEY = "SB_DOP"
+
+    def test_liste_wird_zurueckgegeben(self):
+        data = [{"uuid": "fm-1"}, {"uuid": "fm-2"}]
+        session = _mock_gdwh_session()
+        session.post.return_value = _mock_response(200, data)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
+        assert result == data
+
+    def test_nicht_liste_gibt_leere_liste(self):
+        session = _mock_gdwh_session()
+        session.post.return_value = _mock_response(200, {"unerwartet": True})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
+        assert result == []
+
+    def test_url_korrekt_aufgebaut(self):
+        session = _mock_gdwh_session()
+        session.post.return_value = _mock_response(200, [])
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
+        url = session.post.call_args[0][0]
+        assert f"api/geodatasets/{self.GDS_KEY}/fileMetadata/search" in url
+
+    def test_payload_enthaelt_gdskey_und_mostrecent(self):
+        session = _mock_gdwh_session()
+        session.post.return_value = _mock_response(200, [])
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
+        _, kwargs = session.post.call_args
+        assert kwargs["json"] == {"gdsKey": self.GDS_KEY, "mostRecent": True}
+
+    def test_http_fehler_wird_weitergegeben(self):
+        session = _mock_gdwh_session()
+        session.post.return_value = _mock_response(500, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            with pytest.raises(req_module.HTTPError):
+                gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _parse_custom_attributes – reales customAttributes-Fragment (GDWH INT, SB_DOP)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestParseCustomAttributes:
+
+    # 1:1 aus einer echten FileMetadata-Antwort (POST .../fileMetadata/search)
+    REAL_FRAGMENT = (
+        "<Auftragstyp>kry</Auftragstyp><Area>HOMBERG</Area>"
+        "<TerrainModel>Digital Surface Model (DSM photogrammetric autocorrelation)"
+        "</TerrainModel><CameraSystem>Leica ADS100</CameraSystem>"
+        "<CoordinateReferenceSystem>EPSG:2056) CH1903+ / LV95_LN02"
+        "</CoordinateReferenceSystem><Commentary>Digital OrthoPhoto - Mosaic RGB 8BIT"
+        "</Commentary><NoData>0 0 0</NoData>"
+        "<LineID>20241105_1147_12504,20241105_1152_12504,20241105_1158_12504,"
+        "20241105_1203_12504</LineID>"
+        "<StacItemIdDatetime>2024-11-05t1147000</StacItemIdDatetime>"
+    )
+
+    def test_reales_fragment_alle_felder(self):
+        result = _parse_custom_attributes(self.REAL_FRAGMENT)
+        assert result["area"] == "HOMBERG"
+        assert result["auftragstyp"] == "kry"
+        assert result["commentary"] == "Digital OrthoPhoto - Mosaic RGB 8BIT"
+        assert result["line_id"] == (
+            "20241105_1147_12504,20241105_1152_12504,"
+            "20241105_1158_12504,20241105_1203_12504"
+        )
+        assert result["stac_datetime"] == "2024-11-05t1147000"
+
+    def test_leerer_string(self):
+        result = _parse_custom_attributes("")
+        assert result == {
+            "area": "", "line_id": "", "commentary": "",
+            "auftragstyp": "", "stac_datetime": "",
+        }
+
+    def test_kaputtes_xml_gibt_leere_werte(self):
+        result = _parse_custom_attributes("<Area>OBERAAR<")
+        assert result["area"] == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# gdwh_index_file_metadata_by_import
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhIndexFileMetadataByImport:
+
+    def test_join_ueber_importuuid(self):
+        file_metadata = [{
+            "importUuid": "import-1",
+            "temporalKey": "2024",
+            "tileKey": "2586_1168",
+            "commentary": "",
+            "customAttributes": "<Area>HOMBERG</Area><LineID>abc</LineID>",
+        }]
+        index = gdwh_index_file_metadata_by_import(file_metadata)
+        assert "import-1" in index
+        assert index["import-1"]["area"] == "HOMBERG"
+        assert index["import-1"]["line_id"] == "abc"
+        assert index["import-1"]["year"] == "2024"
+        assert index["import-1"]["tile_key"] == "2586_1168"
+
+    def test_eintraege_ohne_importuuid_werden_uebersprungen(self):
+        file_metadata = [{"customAttributes": "<Area>X</Area>"}]
+        index = gdwh_index_file_metadata_by_import(file_metadata)
+        assert index == {}
+
+    def test_erster_treffer_pro_import_gewinnt(self):
+        file_metadata = [
+            {"importUuid": "import-1", "temporalKey": "2023",
+             "customAttributes": "<Area>ERSTE</Area>"},
+            {"importUuid": "import-1", "temporalKey": "2023",
+             "customAttributes": "<Area>ZWEITE</Area>"},
+        ]
+        index = gdwh_index_file_metadata_by_import(file_metadata)
+        assert index["import-1"]["area"] == "ERSTE"
+
+    def test_leere_liste(self):
+        assert gdwh_index_file_metadata_by_import([]) == {}
+
+    def test_commentary_fallback_auf_feld(self):
+        # customAttributes ohne <Commentary> → Fallback auf fm["commentary"]
+        file_metadata = [{
+            "importUuid": "import-1",
+            "commentary": "Feld-Kommentar",
+            "customAttributes": "<Area>X</Area>",
+        }]
+        index = gdwh_index_file_metadata_by_import(file_metadata)
+        assert index["import-1"]["commentary"] == "Feld-Kommentar"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
