@@ -435,8 +435,11 @@ class KryDeleteApp(tk.Tk):
         self._nb.add(gdwh_tab, text="  GDWH  Imports  ")
         self._build_gdwh_tab(gdwh_tab)
 
-        # GDWH-Tab wird häufiger genutzt als STAC Assets – vor STAC einreihen.
+        # GDWH-Tab wird häufiger genutzt als STAC Assets – vor STAC einreihen
+        # und beim Start auch direkt anzeigen (sonst bleibt trotz Neueinreihung
+        # der zuerst hinzugefügte STAC-Tab als aktive Auswahl stehen).
         self._nb.insert(0, gdwh_tab)
+        self._nb.select(gdwh_tab)
 
     def _on_tab_changed(self, _):
         """Mausrad-Scrollziel je nach aktivem Tab umschalten."""
