@@ -246,28 +246,34 @@ geleert wird) – ein früherer Bucket-Scan-Ansatz wurde deshalb ersetzt: Sobald
 der Bucket-Ordner geleert war, liess sich kein Import mehr anreichern, obwohl
 die Daten weiterhin im GDWH vorhanden waren.
 
-Aus dem `customAttributes`-Feld (ein XML-Fragment) sowie `temporalKey` werden folgende Felder extrahiert:
+Aus dem `customAttributes`-Feld (ein XML-Fragment), `temporalKey` und `fileFormat` werden folgende Felder extrahiert:
 
 | Feld | Quelle | Bedeutung |
 |---|---|---|
 | Auftragstyp | `<Auftragstyp>` in `customAttributes` | `KRY` oder `RAM` |
 | AREA | `<Area>` in `customAttributes` | AOI-Name (z.B. `OBERAAR`) |
-| LineID | `<LineID>` in `customAttributes` | Befliegungslinien-IDs |
 | StacItemIdDatetime | `<StacItemIdDatetime>` in `customAttributes` | Aufnahmedatum |
+| Commentary | `<Commentary>` in `customAttributes` (Fallback: `commentary`-Feld) | Freitext-Bemerkung |
 | Jahr | `temporalKey` (FileMetadata) | Aufnahmejahr |
+| Dateiformat | `fileFormat.name`/`.extension` (FileMetadata) | z.B. `TIFF` / `.tif` |
+
+LineID (`<LineID>` in `customAttributes`) wird zwar mitgeladen (`match["line_id"]`), aber bewusst nicht in der Liste angezeigt.
 
 #### Anzeige mit FileMetadata-Match
 
 ```
-☐  2023  OBERAAR
+☐  2023  OBERAAR    [SB_DOP · TIFF]
      KRY    2023-08-15t102000
-     LineID: 20230815_1020_12504
-     2023-08-20 14:39
+     Digital OrthoPhoto - Mosaic RGB 8BIT   ·   2023-08-20 14:39
 ```
 
 #### Anzeige ohne FileMetadata-Match (Fallback)
 
 Wenn kein passender FileMetadata-Eintrag gefunden wird (z.B. sehr alte Imports), zeigt das Tool `????` als Jahr und die DataPackage-ID statt der AREA – das Package bleibt trotzdem in der Liste und ist löschbar, wird durch den Jahresfilter also nicht ausgeblendet.
+
+#### Löschbarkeit ("nicht löschbar"-Hinweis)
+
+`GET /data/imports` liefert in der Praxis kein Status-Feld (nur `uuid`/`gdsKey`/`importDate`/`footprint`). Ein Package gilt daher als löschbar, solange kein explizit anderslautender Status vom Server zurückkommt – das eigentliche "muss Status 'Imported' haben"-Kriterium wird letztlich vom `DELETE`-Aufruf selbst geprüft; ein Fehlschlag erscheint dann als `[FAIL]` im Log mit der Original-Fehlermeldung des GDWH.
 
 ---
 
@@ -307,7 +313,7 @@ Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automat
 ```
 1.  Umgebung wählen (INT zum Testen, PROD für Live-Daten)
 2.  GDS-Key eingeben  →  [Imports laden]
-       → Liste wird mit Auftragstyp, AREA, Jahr und LineID angereichert
+       → Liste wird mit Auftragstyp, AREA, Jahr, Commentary und Dateiformat angereichert
 3.  Zu löschende DataPackages ankreuzen
 4.  Optional: E-Mail für Job-Benachrichtigung eingeben
 5.  [Import Auswahl (n) löschen]  →  Sicherheitsdialog bestätigen
@@ -322,7 +328,7 @@ Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automat
 pytest test_functions.py -v
 ```
 
-111 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_search_file_metadata`, `gdwh_cleanup_data_package` und `check_asset_info`.
+112 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_search_file_metadata`, `gdwh_cleanup_data_package` und `check_asset_info`.
 
 ---
 

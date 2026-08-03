@@ -792,6 +792,7 @@ class TestGdwhIndexFileMetadataByImport:
             "tileKey": "2586_1168",
             "commentary": "",
             "customAttributes": "<Area>HOMBERG</Area><LineID>abc</LineID>",
+            "fileFormat": {"name": "TIFF", "extension": ".tif"},
         }]
         index = gdwh_index_file_metadata_by_import(file_metadata)
         assert "import-1" in index
@@ -799,6 +800,17 @@ class TestGdwhIndexFileMetadataByImport:
         assert index["import-1"]["line_id"] == "abc"
         assert index["import-1"]["year"] == "2024"
         assert index["import-1"]["tile_key"] == "2586_1168"
+        assert index["import-1"]["file_format"] == "TIFF"
+        assert index["import-1"]["file_extension"] == ".tif"
+
+    def test_fehlendes_fileformat_gibt_leere_strings(self):
+        file_metadata = [{
+            "importUuid": "import-1",
+            "customAttributes": "",
+        }]
+        index = gdwh_index_file_metadata_by_import(file_metadata)
+        assert index["import-1"]["file_format"] == ""
+        assert index["import-1"]["file_extension"] == ""
 
     def test_eintraege_ohne_importuuid_werden_uebersprungen(self):
         file_metadata = [{"customAttributes": "<Area>X</Area>"}]

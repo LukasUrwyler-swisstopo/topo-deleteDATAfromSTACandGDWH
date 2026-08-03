@@ -435,6 +435,9 @@ class KryDeleteApp(tk.Tk):
         self._nb.add(gdwh_tab, text="  GDWH  Imports  ")
         self._build_gdwh_tab(gdwh_tab)
 
+        # GDWH-Tab wird häufiger genutzt als STAC Assets – vor STAC einreihen.
+        self._nb.insert(0, gdwh_tab)
+
     def _on_tab_changed(self, _):
         """Mausrad-Scrollziel je nach aktivem Tab umschalten."""
         tab_text = self._nb.tab(self._nb.select(), "text")
@@ -943,6 +946,24 @@ class KryDeleteApp(tk.Tk):
             bordercolor=T["sep"], insertcolor=T["fg"],
             selectbackground=T["sel_bg"], selectforeground=T["sel_fg"],
         )
+        s.configure("TCombobox",
+            fieldbackground=T["input"], foreground=T["fg"],
+            background=T["input"], bordercolor=T["sep"], arrowcolor=T["fg"],
+            selectbackground=T["sel_bg"], selectforeground=T["sel_fg"],
+        )
+        # "readonly" (State der GDS-Key-Auswahl) übersteuert sonst die obige
+        # fieldbackground mit der hellen Theme-Vorgabe – muss pro State
+        # gemappt werden, sonst bleibt das Feld im Dark Mode zu hell.
+        s.map("TCombobox",
+            fieldbackground=[("readonly", T["input"]), ("disabled", T["input"])],
+            foreground=[("readonly", T["fg"])],
+            selectbackground=[("readonly", T["sel_bg"])],
+            selectforeground=[("readonly", T["sel_fg"])],
+        )
+        self.option_add("*TCombobox*Listbox.background", T["input"])
+        self.option_add("*TCombobox*Listbox.foreground", T["fg"])
+        self.option_add("*TCombobox*Listbox.selectBackground", T["sel_bg"])
+        self.option_add("*TCombobox*Listbox.selectForeground", T["sel_fg"])
         s.configure("Vertical.TScrollbar",
             background=T["btn"], troughcolor=T["root"],
             bordercolor=T["sep"], arrowcolor=T["fg"],
@@ -1894,18 +1915,20 @@ class KryDeleteApp(tk.Tk):
             pkg_date   = gdwh_import_date(imp)
             pkg_bbox   = gdwh_import_footprint_bbox(imp)
             pkg_status = gdwh_import_status(imp)
-            # GET /imports liefert DataPackages unabhängig vom Status zurück –
-            # ein bereits gelöschtes/im Löschvorgang befindliches Package bleibt
-            # also sichtbar (nur mit geändertem Status). DELETE schlägt für
-            # solche Packages ohnehin ab ("must have status 'Imported'"),
-            # daher hier schon die Checkbox sperren statt einen erneuten,
-            # zwangsläufig fehlschlagenden Löschversuch zuzulassen.
-            deletable = pkg_status.lower() == "imported"
+            # GET /data/imports liefert in der Praxis GAR KEIN Status-Feld
+            # (nur uuid/gdsKey/importDate/footprint – per Swagger verifiziert),
+            # gdwh_import_status() liefert daher fast immer "?". Nur wenn ein
+            # ECHTER, bekannter Status zurückkommt und der NICHT "Imported"
+            # ist, sperren wir die Checkbox präventiv (DELETE würde ohnehin
+            # ablehnen, siehe Fehlermeldung "must have status 'Imported'").
+            # Bei "?" (Normalfall) gilt: löschbar, bis der server-seitige
+            # DELETE-Aufruf das Gegenteil zeigt (dann als [FAIL] im Log).
+            deletable = pkg_status == "?" or pkg_status.lower() == "imported"
 
             auftragstyp   = match.get("auftragstyp", "")  if match else ""
             area          = match.get("area", "")          if match else ""
             stac_datetime = match.get("stac_datetime", "") if match else ""
-            line_id       = match.get("line_id", "")       if match else ""
+            commentary    = match.get("commentary", "")    if match else ""
 
             # Jahr für Anzeige: stac_datetime > Ordnername > importDate
             year = ""
@@ -1964,9 +1987,11 @@ class KryDeleteApp(tk.Tk):
             ).pack(side="left")
 
             gds_key = getattr(self, "_gdwh_current_gds_key", "")
+            file_format = match.get("file_format", "") if match else ""
+            gds_key_label = f"[{gds_key}" + (f" · {file_format}]" if file_format else "]")
             if gds_key:
                 tk.Label(
-                    row1, text=f"    [{gds_key}]",
+                    row1, text=f"    {gds_key_label}",
                     font=("Cascadia Mono", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
                 ).pack(side="left")
@@ -1978,10 +2003,9 @@ class KryDeleteApp(tk.Tk):
                     bg=T["chk_bg"], fg=T["hint"], anchor="w",
                 ).pack(side="left")
 
-            # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime  LineID ──
+            # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime ────────
             row2 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row2.pack(fill="x", padx=30, pady=0)
-            row2_has_content = False
 
             if auftragstyp:
                 tk.Label(
@@ -1989,36 +2013,31 @@ class KryDeleteApp(tk.Tk):
                     font=("Cascadia Mono", 8, "bold"),
                     bg=T["chk_bg"], fg=T["ok"], anchor="w",
                 ).pack(side="left")
-                row2_has_content = True
 
             if stac_datetime:
                 tk.Label(
-                    row2, text=("    " if row2_has_content else "") + stac_datetime,
+                    row2, text=("    " if auftragstyp else "") + stac_datetime,
                     font=("Segoe UI", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
                 ).pack(side="left")
-                row2_has_content = True
             elif not auftragstyp and pkg_bbox:
                 tk.Label(
                     row2, text=pkg_bbox,
                     font=("Segoe UI", 8),
                     bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
                 ).pack(side="left")
-                row2_has_content = True
 
-            if line_id:
-                tk.Label(
-                    row2, text=("    " if row2_has_content else "") + f"LineID: {line_id}",
-                    font=("Segoe UI", 8),
-                    bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
-                ).pack(side="left")
-
-            # ── Zeile 3 (eingerückt): Import-Datum ───────────────────────────
+            # ── Zeile 3 (eingerückt): Commentary  Import-Datum ──────────────
             row3 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row3.pack(fill="x", padx=30, pady=(0, 2))
 
+            parts3 = []
+            if commentary:
+                parts3.append(commentary)
+            parts3.append(pkg_date)
+
             tk.Label(
-                row3, text=pkg_date,
+                row3, text="   ·   ".join(parts3),
                 font=("Segoe UI", 8),
                 bg=T["chk_bg"], fg=T["fg_dim"], anchor="w",
             ).pack(side="left")

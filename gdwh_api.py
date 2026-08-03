@@ -348,6 +348,7 @@ def gdwh_index_file_metadata_by_import(file_metadata: List[Dict]) -> Dict[str, D
         if not import_uuid or import_uuid in index:
             continue
         attrs = _parse_custom_attributes(fm.get("customAttributes", ""))
+        file_format = fm.get("fileFormat") or {}
         index[import_uuid] = {
             "area":          attrs["area"],
             "line_id":       attrs["line_id"],
@@ -356,6 +357,8 @@ def gdwh_index_file_metadata_by_import(file_metadata: List[Dict]) -> Dict[str, D
             "stac_datetime": attrs["stac_datetime"],
             "year":          str(fm.get("temporalKey") or ""),
             "tile_key":      fm.get("tileKey", ""),
+            "file_format":   file_format.get("name", ""),
+            "file_extension": file_format.get("extension", ""),
         }
     return index
 
