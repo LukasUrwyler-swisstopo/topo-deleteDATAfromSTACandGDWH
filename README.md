@@ -88,6 +88,8 @@ Wird ein Item durch die Löschung **vollständig leer** (alle Assets entfernt), 
 - **INT** = Integrationsumgebung (`sys-data.int.bgdi.ch`) — zum Testen
 - **PROD** = Produktionsumgebung (`data.geo.admin.ch`) — Live-Daten
 
+Reihenfolge in Schritt 1: **Umgebung (INT/PROD) → `Credentials laden` (mit Status-Text daneben) → `STAC Browser öffnen` → URL-Hinweis.**
+
 `Credentials laden` liest die Zugangsdaten aus `secrets/stac_credentials.json` (Button ist amber, solange nicht geladen).  
 Erst danach wird der `Laden`-Button aktiviert.
 
@@ -141,26 +143,33 @@ Item / Asset                              Auswahl  Area     Status     Typ    Gr
 ▾ kry-2024-08-20t10270000  [OBERAAR  2024-08-20]      ◯    OBERAAR              2 Assets
       nrgb-16bit-cog.tif                              ◯    OBERAAR   ✓ 200   .tif   345.6 MB  2026-04-27
       thumbnail.jpg                                   ◯              ✓ 200   .jpg    61.2 KB  2026-06-16
+▾ ram-2024-06-24t10520200  [LEER]                      ◯                     0 Assets (leer)
 ```
 
 - **Area** wird zuerst aus den Item-Properties, sonst aus der Asset-Description (`Area: ...`) extrahiert.
 - Der Collection-Präfix `ch.swisstopo.spezialbefliegungen_` wird im Item-Namen ausgeblendet, Aufnahmedatum/Area erscheinen im Item-Label.
-- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ◯ nicht ausgewählt · ⬤ ausgewählt (amber eingefärbt) · ◐ (nur beim Item) teilweise ausgewählt. Eine Item-Zeile wird nur dann komplett amber, wenn **alle** ihre Assets ausgewählt sind. Liegt für ein Asset bereits ein Prüfergebnis vor (grün/rot/orange, siehe unten), hat dessen Farbe Vorrang vor der Amber-Auswahlmarkierung.
+- Auswahl erfolgt per Klick auf die **Kreis-Glyphen**: ◯ nicht ausgewählt · ⬤ ausgewählt (amber eingefärbt) · ◐ (nur beim Item) teilweise ausgewählt. Eine Item-Zeile wird nur dann komplett amber, wenn **alle** ihre Assets ausgewählt sind. Liegt für ein Asset bereits ein Prüfergebnis vor (grün/rot/orange, siehe unten), hat dessen Farbe Vorrang vor der Amber-Auswahlmarkierung — ausgewählte Zeilen werden zusätzlich **fett** dargestellt, damit die Auswahl auch bei einer bereits farbig eingefärbten (fehlerhaften) Zeile eindeutig sichtbar bleibt.
 - **Standardmässig sind alle Assets abgewählt** — die Auswahl muss bewusst getroffen werden (anders als im read-only Monitoring-Tool).
 - Rechtsklick auf eine Zeile öffnet ein Kontextmenü (URL kopieren, im Browser öffnen, Item-ID kopieren, im STAC Browser öffnen); Doppelklick auf ein Asset öffnet dessen URL direkt im Browser.
+
+#### Leere Items (Items ohne Assets)
+
+Items ganz ohne Assets werden ebenfalls angezeigt (rot/kursiv, `0 Assets (leer)`) statt unsichtbar zu verschwinden — inkl. Auffindbarkeit über die Item-ID-Suche. Da sie keine Asset-Kindzeilen haben, sitzt die Lösch-Checkbox direkt auf der Item-Zeile; beim Löschen wird das Item **direkt** entfernt (`DELETE .../items/{id}`), ohne vorgelagerten Asset-Löschschritt.
 
 #### Auswahlsteuerung
 
 | Button | Funktion |
 |---|---|
-| Alle auswählen | Alle sichtbaren Assets ankreuzen (●) |
+| Alle auswählen | Alle sichtbaren Assets + leeren Items ankreuzen (●) |
 | Alle abwählen | Alle abwählen (○) |
-| **Assets prüfen (HEAD)** | HTTP-HEAD-Request je Asset → Status/Grösse/Geändert |
-| **Fehlerhafte auswählen** | Ersetzt die Auswahl durch alle Assets mit Fehler-Status |
+| **Assets prüfen (HEAD)** | HTTP-HEAD-Request je Asset → Status/Grösse/Geändert. Button-Text ist amber, solange noch nicht geprüft wurde, und wird beim ersten Klick grün. |
+| **Fehlerhafte anzeigen** | Blendet die Baumansicht auf fehlerhafte Assets (Status err/warn) **und** leere Items ein/aus — kombinierbar mit den übrigen Filtern. Button-Text wechselt zu `Alle Assets wieder anzeigen`. |
+| **Fehlerhafte auswählen** | Ersetzt die Auswahl durch alle Assets mit Fehler-Status **und** alle leeren Items — beide gelten als "fehlerhaft" im Sinne dieses Buttons. Auch ohne vorherige HEAD-Prüfung nutzbar, sobald leere Items geladen sind. |
+| **ITEMs ohne Thumbnail** (nur bei Auftragstyp RAM) | Blendet die Baumansicht auf Items ohne `thumbnail.jpg`-Asset ein/aus (reine Metadaten-Prüfung, keine HEAD-Prüfung nötig). Items mit `t23595900` im Namen (Tagesübersicht-Items mit KML-Platzhalter, feste Zeit 23:59:59) haben planmässig nie ein Thumbnail und werden ausgeschlossen. Button-Text wechselt ebenfalls zu `Alle Assets wieder anzeigen`. |
 
 #### Asset-Prüfung (HEAD-Requests)
 
-Prüft die Erreichbarkeit der Dateien direkt auf dem Server (6 parallele Requests) und liest zusätzlich Dateigrösse (`Content-Length`) und Änderungsdatum (`Last-Modified`) aus den Response-Headern.
+Prüft die Erreichbarkeit der Dateien direkt auf dem Server (6 parallele Requests) und liest zusätzlich Dateigrösse (`Content-Length`) und Änderungsdatum (`Last-Modified`) aus den Response-Headern. Prüfergebnisse überleben einen Filterwechsel (z.B. Umschalten auf "Fehlerhafte anzeigen") und werden nicht verworfen.
 
 | Anzeige (Status-Spalte) | Bedeutung |
 |---|---|
@@ -184,11 +193,13 @@ Vor der Löschung erscheint ein **zweistufiger Sicherheitsdialog**:
 1. Checkbox bestätigen: *"Ich verstehe, dass die Assets permanent gelöscht werden"*
 2. Umgebungsname eintippen (`INT` oder `PROD`)
 
-Das Log protokolliert jeden gelöschten Asset mit Status `[OK]` oder `[FAIL]`.
+Das Log protokolliert jeden gelöschten Asset mit Status `[OK]` oder `[FAIL]`. Bei `[FAIL]` wird zusätzlich die **Klartext-Fehlermeldung der STAC-API** mitgeloggt (z.B. `HTTP 400 – Asset thumbnail.jpg has still an upload in progress`), nicht nur der HTTP-Code.
 
 Nach Abschluss werden erfolgreich gelöschte Assets/Items automatisch aus der Baumansicht entfernt (kein manueller Reload nötig). Fehlgeschlagene Assets bleiben sichtbar und ausgewählt.
 
-**Item-Löschung:** Werden durch die Auswahl alle Assets eines Items entfernt, löscht das Tool das nun leere Item automatisch nach. Haben andere Assets im gleichen Item keine Checkbox gesetzt, bleibt das Item vollständig erhalten.
+**Item-Löschung:** Werden durch die Auswahl alle Assets eines Items entfernt, löscht das Tool das nun leere Item automatisch nach. Haben andere Assets im gleichen Item keine Checkbox gesetzt, bleibt das Item vollständig erhalten. Bereits als **leer ausgewählte Items** (siehe oben) werden direkt gelöscht, ohne vorgelagerten Asset-Löschschritt.
+
+**Automatische Wiederherstellung bei "upload in progress":** Scheitert eine Asset-Löschung mit der Meldung, dass noch ein Upload läuft (verwaiste Multipart-Upload-Session eines abgebrochenen Direkt-Uploads, siehe `topo-rapidmapping/main_multipart_upload_via_api.py`), versucht das Tool automatisch: offene Upload-Sessions des Assets auflisten (`GET .../assets/{key}/uploads?status=in-progress`), jede abbrechen (`POST .../uploads/{upload_id}/abort`) und die Löschung danach einmal erneut. Jeder Schritt wird im Log protokolliert.
 
 ---
 
@@ -328,7 +339,7 @@ Nach Abschluss werden erfolgreich zum Löschen eingereichte DataPackages automat
 pytest test_functions.py -v
 ```
 
-112 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_search_file_metadata`, `gdwh_cleanup_data_package` und `check_asset_info`.
+113 Tests decken alle API-Funktionen in `stac_api.py` und `gdwh_api.py` ab (HTTP-Calls werden gemockt, inkl. GDWH über `_gdwh_session()`), u.a. `gdwh_import_footprint_bbox`, `gdwh_search_file_metadata`, `gdwh_cleanup_data_package`, `check_asset_info` sowie `list_asset_uploads`/`abort_asset_upload` (Upload-Recovery).
 
 ---
 
@@ -336,6 +347,6 @@ pytest test_functions.py -v
 
 - Der BVCOL-Firmenproxy (`proxy-bvcol.admin.ch:8080`) ist in `stac_api.py` und `gdwh_api.py` hinterlegt. `stac_api.py` versucht ihn zuerst und schaltet nach einem `ProxyError` automatisch auf Direktverbindung um — dadurch funktioniert das Tool auch ausserhalb des Bundesnetzes (z.B. privater Rechner), sofern der STAC-Endpunkt direkt erreichbar ist. Für abweichende Proxy-Konfigurationen: `secrets/proxy_config.json` anlegen (Vorlage: `secrets/proxy_config_template.json`).
 - `logs/` enthält Tages-Logs und ist nicht im Git-Tracking.
-- STAC-Endpunkte: swisstopo Transactional API (`DELETE /collections/{id}/items/{itemId}/assets/{assetKey}`, `DELETE /collections/{id}/items/{itemId}`)
+- STAC-Endpunkte: swisstopo Transactional API (`DELETE /collections/{id}/items/{itemId}/assets/{assetKey}`, `DELETE /collections/{id}/items/{itemId}`) sowie die Upload-Extension (`GET`/`POST .../assets/{assetKey}/uploads[/{uploadId}/abort]`) für die "upload in progress"-Wiederherstellung
 - GDWH-Endpunkte: GDWH-API v2 (`GET /api/geodatasets/{gdsKey}/data/imports`, `DELETE /api/geodatasets/{gdsKey}/data/imports/{datapackageId}`)
 - Koordinaten im LV95-Format (CH1903+, EPSG:2056) mit Schweizer Apostroph als Tausendertrennzeichen

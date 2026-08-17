@@ -1196,12 +1196,17 @@ class KryDeleteApp(tk.Tk):
         Button nur dort einblenden. Beim Wegschalten von RAM wird ein aktiver
         Filter automatisch zurückgesetzt (sonst bliebe die Auswahl unsichtbar
         aktiv hängen)."""
+        # winfo_manager() statt winfo_ismapped(): Letzteres hängt zusätzlich
+        # davon ab, ob das Fenster gerade tatsächlich auf dem Bildschirm
+        # sichtbar ist (z.B. False direkt nach dem Bauen, vor dem ersten
+        # Map-Event) – winfo_manager() spiegelt zuverlässig nur den reinen
+        # Pack-Zustand des Widgets.
         is_ram = AUFTRAGSTYPEN.get(self._auftragstyp_var.get(), "") == "ram"
         if is_ram:
-            if not self._show_no_thumb_btn.winfo_ismapped():
+            if self._show_no_thumb_btn.winfo_manager() != "pack":
                 self._show_no_thumb_btn.pack(side="left")
         else:
-            if self._show_no_thumb_btn.winfo_ismapped():
+            if self._show_no_thumb_btn.winfo_manager() == "pack":
                 self._show_no_thumb_btn.pack_forget()
             if self._show_no_thumb_only:
                 self._show_no_thumb_only = False
