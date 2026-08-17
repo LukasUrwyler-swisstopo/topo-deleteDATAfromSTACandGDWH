@@ -93,6 +93,11 @@ def _session_delete(url: str, auth: Tuple) -> requests.Response:
                     verify=STAC_SSL_VERIFY, timeout=(30, 60))
 
 
+def _session_post(url: str, auth: Tuple, json_body: dict = None) -> requests.Response:
+    return _request(requests.post, url, auth=auth, json=json_body,
+                    verify=STAC_SSL_VERIFY, timeout=(30, 60))
+
+
 # ─── Öffentliche API-Funktionen ───────────────────────────────────────────────
 
 def get_item_direct(base_url: str, auth: Tuple, item_id: str) -> Optional[Dict]:
@@ -125,20 +130,91 @@ def get_collection_items(base_url: str, auth: Tuple, log_fn=print) -> List[Dict]
     return all_items
 
 
+def _error_reason(r: requests.Response) -> str:
+    """Extrahiert eine möglichst aussagekräftige Fehlermeldung aus einer
+    fehlgeschlagenen Response – STAC/OGC-API-Fehler kommen meist als JSON
+    ({"code": ..., "description": ...} o.ä.), sonst Klartext/Statustext."""
+    try:
+        data = r.json()
+        if isinstance(data, dict):
+            msg = data.get("description") or data.get("detail") or data.get("message")
+            if msg:
+                # "description" kommt bei Validierungsfehlern oft als Liste
+                # von Einzelmeldungen zurück (z.B. ["Asset X has still an
+                # upload in progress"]) statt als einzelner String.
+                if isinstance(msg, list):
+                    return "; ".join(str(m) for m in msg)
+                return str(msg)
+    except ValueError:
+        pass
+    text = (r.text or "").strip()
+    if text:
+        return text[:300]
+    return r.reason or ""
+
+
 def delete_asset(base_url: str, auth: Tuple,
-                 item_id: str, asset_key: str) -> Tuple[bool, int]:
-    """Löscht einen einzelnen Asset. Gibt (Erfolg, HTTP-Statuscode) zurück."""
+                 item_id: str, asset_key: str) -> Tuple[bool, int, str]:
+    """Löscht einen einzelnen Asset.
+    Gibt (Erfolg, HTTP-Statuscode, Fehlermeldung bei Misserfolg) zurück."""
     url = urljoin(base_url,
                   f"collections/{COLLECTION_ID}/items/{item_id}/assets/{asset_key}")
     r = _session_delete(url, auth)
-    return r.status_code in (200, 204), r.status_code
+    ok = r.status_code in (200, 204)
+    return ok, r.status_code, ("" if ok else _error_reason(r))
 
 
-def delete_item(base_url: str, auth: Tuple, item_id: str) -> Tuple[bool, int]:
-    """Löscht ein Item vollständig (nur wenn leer). Gibt (Erfolg, HTTP-Statuscode) zurück."""
+def delete_item(base_url: str, auth: Tuple, item_id: str) -> Tuple[bool, int, str]:
+    """Löscht ein Item vollständig (nur wenn leer).
+    Gibt (Erfolg, HTTP-Statuscode, Fehlermeldung bei Misserfolg) zurück."""
     url = urljoin(base_url, f"collections/{COLLECTION_ID}/items/{item_id}")
     r = _session_delete(url, auth)
-    return r.status_code in (200, 204), r.status_code
+    ok = r.status_code in (200, 204)
+    return ok, r.status_code, ("" if ok else _error_reason(r))
+
+
+def list_asset_uploads(base_url: str, auth: Tuple, item_id: str, asset_key: str,
+                       status: Optional[str] = "in-progress") -> Tuple[bool, int, object]:
+    """Listet Multipart-Uploads eines Assets (STAC Upload-Extension, rein
+    lesend) – dient dazu, einen "has still an upload in progress"-Fehler beim
+    Löschen zu beheben. Endpoint/Antwortform verifiziert anhand des produktiven
+    Upload-Skripts topo-rapidmapping/main_multipart_upload_via_api.py
+    (_abort_previous_upload): Response ist {"uploads": [{"upload_id": ..., ...}]}.
+    status=None listet alle, sonst serverseitig gefiltert.
+    Gibt (Erfolg, HTTP-Code, Liste der Upload-Dicts bzw. Fehlertext) zurück."""
+    url = urljoin(
+        base_url,
+        f"collections/{COLLECTION_ID}/items/{item_id}/assets/{asset_key}/uploads")
+    params = {"status": status} if status else None
+    r = _session_get(url, auth, params=params)
+    if r.status_code == 200:
+        try:
+            data = r.json()
+        except ValueError:
+            return True, r.status_code, []
+        uploads = data.get("uploads", []) if isinstance(data, dict) else data
+        return True, r.status_code, uploads
+    return False, r.status_code, _error_reason(r)
+
+
+def abort_asset_upload(base_url: str, auth: Tuple, item_id: str,
+                       asset_key: str, upload_id: str) -> Tuple[bool, int, str]:
+    """Bricht einen offenen Multipart-Upload eines Assets ab (STAC Upload-
+    Extension), damit das Asset anschliessend gelöscht werden kann.
+    Erfolg erfordert HTTP 200 UND status=="aborted" im Body (siehe Referenz-
+    skript oben). Gibt (Erfolg, HTTP-Statuscode, Fehlermeldung bei Misserfolg) zurück."""
+    url = urljoin(
+        base_url,
+        f"collections/{COLLECTION_ID}/items/{item_id}/assets/{asset_key}"
+        f"/uploads/{upload_id}/abort")
+    r = _session_post(url, auth)
+    ok = False
+    if r.status_code == 200:
+        try:
+            ok = r.json().get("status") == "aborted"
+        except ValueError:
+            ok = True
+    return ok, r.status_code, ("" if ok else _error_reason(r))
 
 
 def check_asset_info(href: str, auth: Tuple) -> Dict:

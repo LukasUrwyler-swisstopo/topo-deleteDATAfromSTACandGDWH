@@ -41,6 +41,8 @@ def _mock_response(status: int = 200, json_data=None, raise_on_status=False):
     r = MagicMock()
     r.status_code = status
     r.json.return_value = json_data if json_data is not None else {}
+    r.text = ""
+    r.reason = ""
     if raise_on_status:
         r.raise_for_status.side_effect = req_module.HTTPError(response=r)
     else:
@@ -237,26 +239,35 @@ class TestDeleteAsset:
 
     def test_success_200(self):
         with patch("stac_api._session_delete", return_value=_mock_response(200)):
-            ok, code = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
+            ok, code, reason = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is True
         assert code == 200
+        assert reason == ""
 
     def test_success_204(self):
         with patch("stac_api._session_delete", return_value=_mock_response(204)):
-            ok, code = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
+            ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is True
         assert code == 204
 
     def test_fail_403(self):
         with patch("stac_api._session_delete", return_value=_mock_response(403)):
-            ok, code = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
+            ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is False
         assert code == 403
 
     def test_fail_404(self):
         with patch("stac_api._session_delete", return_value=_mock_response(404)):
-            ok, code = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
+            ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is False
+
+    def test_fail_reason_from_json_description(self):
+        with patch("stac_api._session_delete",
+                   return_value=_mock_response(400, json_data={"description": "Cannot delete last asset"})):
+            ok, code, reason = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
+        assert ok is False
+        assert code == 400
+        assert reason == "Cannot delete last asset"
 
     def test_url_korrekt_aufgebaut(self):
         with patch("stac_api._session_delete",
@@ -274,18 +285,18 @@ class TestDeleteItem:
 
     def test_success_200(self):
         with patch("stac_api._session_delete", return_value=_mock_response(200)):
-            ok, code = delete_item(BASE, AUTH, "item-001")
+            ok, code, _ = delete_item(BASE, AUTH, "item-001")
         assert ok is True
         assert code == 200
 
     def test_success_204(self):
         with patch("stac_api._session_delete", return_value=_mock_response(204)):
-            ok, _ = delete_item(BASE, AUTH, "item-001")
+            ok, _, _ = delete_item(BASE, AUTH, "item-001")
         assert ok is True
 
     def test_fail_404(self):
         with patch("stac_api._session_delete", return_value=_mock_response(404)):
-            ok, code = delete_item(BASE, AUTH, "item-999")
+            ok, code, _ = delete_item(BASE, AUTH, "item-999")
         assert ok is False
         assert code == 404
 
