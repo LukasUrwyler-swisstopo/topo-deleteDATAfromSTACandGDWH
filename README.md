@@ -2,10 +2,10 @@
 
 GUI-Tool zum gezielten Löschen von Daten aus:
 
-- **Tab 1 — STAC [INT/PROD]**:<br>
-  Assets (und bei Bedarf leere Items) aus der Collection `ch.swisstopo.spezialbefliegungen`
-- **Tab 2 — GDWH [INT/PROD]**:<br>
+- **Tab 1 — GDWH [INT/PROD]**  (Start-Tab, da häufiger genutzt):<br>
   DataPackage-Imports aus dem Geodata-Warehouse (`ltgdwhi` / `ltgdwh`)
+- **Tab 2 — STAC [INT/PROD]**:<br>
+  Assets (und bei Bedarf leere Items) aus der Collection `ch.swisstopo.spezialbefliegungen`
 
 ## GUI
 
@@ -78,7 +78,7 @@ python 0_GUI_stac_gdwh_delete_Data.py
 
 ---
 
-## Tab 1 — STAC
+## Tab 2 — STAC
 
 Löscht Assets aus `ch.swisstopo.spezialbefliegungen` via swisstopo Transactional API.  
 Wird ein Item durch die Löschung **vollständig leer** (alle Assets entfernt), wird das Item anschliessend automatisch mitgelöscht.
@@ -220,7 +220,7 @@ Nach Abschluss werden erfolgreich gelöschte Assets/Items automatisch aus der Ba
 
 ---
 
-## Tab 2 — GDWH
+## Tab 1 — GDWH
 
 Löscht DataPackage-Imports aus dem Geodata-Warehouse via GDWH-API v2.  
 Die Löschung ist **asynchron** — das GDWH startet einen Job und meldet den Abschluss optional per E-Mail.
