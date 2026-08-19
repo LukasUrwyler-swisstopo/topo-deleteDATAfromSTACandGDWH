@@ -44,6 +44,8 @@ Das Fenster hat zwei Tabs:
 1. Umgebung wählen (INT zum Testen, PROD für Live-Daten)
 2. Auftragstyp (KRY/RAM/Alle) und Jahr wählen, GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`) → **Imports laden**
    Die Liste wird automatisch mit Auftragstyp, Area, Jahr und weiteren Infos angereichert. Auftragstyp und Jahr filtern die bereits geladene Liste sofort weiter, ohne Neu-Laden.
+
+   **Anomalie-Hinweis:** Findet sich zu einem Import kein FileMetadata-Eintrag (Area/Jahr nicht ableitbar, Jahr fällt auf das Import-Datum zurück), wird die Zeile rot mit `⚠ Kein FileMetadata-Match (GDWH-Anomalie)` markiert. Das deutet auf einen unsauberen GDWH-Zustand hin (z.B. eine frühere, unvollständige Löschung). Über den `⧉ Kopieren`-Button neben dem Hinweis lässt sich die Import-UUID zur weiteren Recherche in die Zwischenablage kopieren.
 3. Gewünschte Packages ankreuzen
 4. Optional: E-Mail-Adresse für die Job-Benachrichtigung
 5. **Import Auswahl löschen** → Sicherheitsabfrage bestätigen

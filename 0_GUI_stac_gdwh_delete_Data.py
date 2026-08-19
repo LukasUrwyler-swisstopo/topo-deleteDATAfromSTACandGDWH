@@ -1939,9 +1939,15 @@ class KryDeleteApp(tk.Tk):
         _dts = list(dict.fromkeys(stac_item_acq_date(it) for it in sel_objs if stac_item_acq_date(it)))
         meta_year    = _yrs[0] if len(_yrs) == 1 else ("multi" if _yrs else "unbekannt")
         meta_area    = _ars[0] if len(_ars) == 1 else ("multi" if _ars else "unbekannt")
+        # Für Logausgabe (nicht Dateiname): alle betroffenen Areas einzeln
+        # auflisten statt zu "multi" zusammenzufassen – sonst ist im Log
+        # nicht mehr nachvollziehbar, welche Areas tatsächlich gelöscht wurden.
+        meta_area_full = ", ".join(_ars) if _ars else "unbekannt"
         meta_stac_dt = _dts[0] if len(_dts) == 1 else (f"multi_{len(sel_objs)}" if _dts else "")
         auftragstyp  = self._auftragstyp_var.get().split("(")[0].strip()
 
+        # Dateiname bewusst mit dem kompakten meta_area (ggf. "multi"), sonst
+        # würde ein Dateiname bei vielen Areas unhandlich lang.
         session_logger = self._make_session_logger("STAC", env, meta_year, meta_area, meta_stac_dt)
 
         self._log_write(f"\n{'='*60}\n[{ts}] STAC LÖSCHUNG GESTARTET\n{'='*60}\n")
@@ -1950,19 +1956,25 @@ class KryDeleteApp(tk.Tk):
             f"Collection:      {COLLECTION_ID}\n"
             f"Auftragstyp:     {auftragstyp}\n"
             f"Jahr:            {meta_year}\n"
-            f"AREA:            {meta_area}\n"
+            f"AREA:            {meta_area_full}\n"
             f"STAC-Datetime:   {meta_stac_dt or '(unbekannt)'}\n"
             f"Items:           {len(sel_ids)}  (davon {len(empty_items_to_delete)} bereits leer)"
             f"  |  Assets: {total}\n\n"
         )
         session_logger.info(
             f"[STAC START] {env} | {COLLECTION_ID} | Auftragstyp: {auftragstyp} | "
-            f"Jahr: {meta_year} | AREA: {meta_area} | StacDatetime: {meta_stac_dt} | "
+            f"Jahr: {meta_year} | AREA: {meta_area_full} | StacDatetime: {meta_stac_dt} | "
             f"Items: {len(sel_ids)} (leer: {len(empty_items_to_delete)}) | Assets: {total}")
+
+        # Area je Item für die Log-Zeilen unten nachschlagbar
+        area_by_item = {it["id"]: (stac_item_area(it) or "unbekannt") for it in sel_objs}
 
         for iid, asset_keys in selected_items.items():
             total_in_item = len(self._items_asset_hrefs.get(iid, {}))
-            self._log_write(f"Item: {iid}  ({len(asset_keys)} von {total_in_item} Assets)\n")
+            item_area = area_by_item.get(iid, "unbekannt")
+            self._log_write(
+                f"Item: {iid}  ({len(asset_keys)} von {total_in_item} Assets)  "
+                f"|  Area: {item_area}\n")
             ok_for_item = 0
 
             for ak in asset_keys:
@@ -2022,7 +2034,10 @@ class KryDeleteApp(tk.Tk):
         # Items, die bereits ohne Assets ausgewählt wurden – direkt löschen,
         # da kein vorgelagerter Asset-Löschschritt nötig ist.
         for iid in empty_items_to_delete:
-            self._log_write(f"Item: {iid}  (bereits ohne Assets, wird direkt gelöscht)\n")
+            item_area = area_by_item.get(iid, "unbekannt")
+            self._log_write(
+                f"Item: {iid}  (bereits ohne Assets, wird direkt gelöscht)  "
+                f"|  Area: {item_area}\n")
             item_code, item_reason = 0, ""
             try:
                 item_ok, item_code, item_reason = delete_item(base_url, auth, iid)
@@ -2258,6 +2273,7 @@ class KryDeleteApp(tk.Tk):
         # gegen den NEU gewählten Kontext gelöscht (_gdwh_base_url/gds_key
         # werden bei der Löschung stets frisch/aktuell gelesen).
         self._gdwh_enriched = []
+        self._gdwh_no_match_count = 0
         self._gdwh_clear_list()
         self._gdwh_del_btn.config(
             text="Ausgewählte DataPackages löschen …", state="disabled")
@@ -2274,10 +2290,26 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_selection.clear()
         self._gdwh_row_widgets.clear()
 
+    def _gdwh_copy_uuid(self, uuid: str, button: tk.Button):
+        """Kopiert die Import-UUID in die Zwischenablage, kurzes visuelles Feedback."""
+        self.clipboard_clear()
+        self.clipboard_append(uuid)
+        orig_text = button.cget("text")
+        button.config(text="✓ Kopiert")
+        self.after(1200, lambda: button.config(text=orig_text)
+                   if button.winfo_exists() else None)
+
     def _gdwh_populate_list(self, enriched: List[Tuple]):
         self._gdwh_clear_list()
         T = DARK if self._dark else LIGHT
         self._gdwh_total_loaded = len(enriched)
+        # Anomalie-Zähler: Imports ganz OHNE FileMetadata-Match (match is None).
+        # Das ist der Fall, in dem AREA/Jahr nicht aus fachlichen Attributen
+        # kommen, sondern nur auf importDate/pkg_id zurückfallen – ein Hinweis
+        # auf einen unsauberen GDWH-Zustand (z.B. unvollständige frühere
+        # Löschung), NICHT einfach ein leeres Area-Feld im sonst vorhandenen
+        # FileMetadata-Eintrag.
+        self._gdwh_no_match_count = sum(1 for _, match in enriched if match is None)
 
         if not enriched:
             tk.Label(
@@ -2394,6 +2426,23 @@ class KryDeleteApp(tk.Tk):
                     bg=T["chk_bg"], fg=T["hint"], anchor="w",
                 ).pack(side="left")
 
+            if match is None:
+                tk.Label(
+                    row1,
+                    text=f"    ⚠ Kein FileMetadata-Match (GDWH-Anomalie) — "
+                         f"Import-UUID: {pkg_id}",
+                    font=("Segoe UI", 8, "bold"),
+                    bg=T["chk_bg"], fg=T["err"], anchor="w",
+                ).pack(side="left")
+                copy_btn = tk.Button(
+                    row1, text="⧉ Kopieren", font=("Segoe UI", 7),
+                    bg=T["btn"], fg=T["fg"], relief="flat",
+                    padx=4, pady=0, cursor="hand2",
+                )
+                copy_btn.config(
+                    command=lambda uuid=pkg_id, b=copy_btn: self._gdwh_copy_uuid(uuid, b))
+                copy_btn.pack(side="left", padx=(4, 0))
+
             # ── Zeile 2 (eingerückt): Auftragstyp  StacItemIdDatetime ────────
             row2 = tk.Frame(entry_frame, bg=T["chk_bg"])
             row2.pack(fill="x", padx=30, pady=0)
@@ -2459,9 +2508,12 @@ class KryDeleteApp(tk.Tk):
         selected    = sum(v.get() for v in self._gdwh_selection.values())
         locked_note = f"  |  {total - deletable} gesperrt (Status ≠ Imported)" \
                       if total > deletable else ""
+        no_match = getattr(self, "_gdwh_no_match_count", 0)
+        no_match_note = f"  |  ⚠ {no_match} ohne FileMetadata-Match (GDWH-Anomalie)" \
+                         if no_match else ""
         self._gdwh_preview_lbl.configure(
             text=f"{total} DataPackage(s) geladen  |  {selected} ausgewählt zum Löschen"
-                 f"{locked_note}"
+                 f"{locked_note}{no_match_note}"
         )
         self._gdwh_del_btn.config(
             text=f"Ausgewählte DataPackages ({selected}) löschen …",
@@ -2545,9 +2597,15 @@ class KryDeleteApp(tk.Tk):
 
         meta_year        = _yrs[0] if len(_yrs) == 1 else ("multi" if _yrs else "unbekannt")
         meta_area        = _ars[0] if len(_ars) == 1 else ("multi" if _ars else "unbekannt")
+        # Für Logausgabe (nicht Dateiname): alle betroffenen Areas einzeln
+        # auflisten statt zu "multi" zusammenzufassen – sonst ist im Log
+        # nicht mehr nachvollziehbar, welche Areas tatsächlich gelöscht wurden.
+        meta_area_full   = ", ".join(_ars) if _ars else "unbekannt"
         meta_stac_dt     = _dts[0] if len(_dts) == 1 else (f"multi_{len(pkg_ids)}" if _dts else "")
         meta_auftragstyp = _typs[0] if _typs else ""
 
+        # Dateiname bewusst mit dem kompakten meta_area (ggf. "multi"), sonst
+        # würde ein Dateiname bei vielen Areas unhandlich lang.
         session_logger = self._make_session_logger("GDWH", env, meta_year, meta_area, meta_stac_dt)
 
         self._gdwh_log_write(
@@ -2556,17 +2614,22 @@ class KryDeleteApp(tk.Tk):
             f"GDS-Key:         {gds_key}\n"
             f"Auftragstyp:     {meta_auftragstyp or '(unbekannt)'}\n"
             f"Jahr:            {meta_year}\n"
-            f"AREA:            {meta_area}\n"
+            f"AREA:            {meta_area_full}\n"
             f"STAC-Datetime:   {meta_stac_dt or '(unbekannt)'}\n"
             f"Packages:        {len(pkg_ids)}\n"
             f"E-Mail:          {email or '(keine)'}\n\n"
         )
         session_logger.info(
             f"[GDWH START] {env} | {gds_key} | Auftragstyp: {meta_auftragstyp} | "
-            f"Jahr: {meta_year} | AREA: {meta_area} | StacDatetime: {meta_stac_dt} | "
+            f"Jahr: {meta_year} | AREA: {meta_area_full} | StacDatetime: {meta_stac_dt} | "
             f"Packages: {len(pkg_ids)}")
 
+        # Area je Package für die Einzelzeilen (OK/FAIL) unten nachschlagbar
+        area_by_pkg = {pid: ((m.get("area", "") if m else "") or "unbekannt")
+                       for pid, (_imp, m) in enriched_map.items()}
+
         for i, pkg_id in enumerate(pkg_ids, 1):
+            pkg_area = area_by_pkg.get(pkg_id, "unbekannt")
             try:
                 job = gdwh_delete_import(
                     base_url,
@@ -2574,10 +2637,10 @@ class KryDeleteApp(tk.Tk):
                 job_id     = job.get("id", "?")
                 job_status = job.get("status", "gestartet")
                 self._gdwh_log_write(
-                    f"  [OK]  Package gelöscht: {pkg_id}\n"
+                    f"  [OK]  Package gelöscht: {pkg_id}  |  Area: {pkg_area}\n"
                     f"        Job-ID: {job_id}  |  Status: {job_status}\n")
                 session_logger.info(
-                    f"[GDWH OK] {env}/{gds_key}/{pkg_id}  Job: {job_id}")
+                    f"[GDWH OK] {env}/{gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
                 ok_list.append(pkg_id)
 
                 # Bucket aufräumen: falls noch ein DataPackage-Ordner mit
@@ -2600,9 +2663,10 @@ class KryDeleteApp(tk.Tk):
                         f"[GDWH BUCKET CLEANUP FAIL] {env}/{gds_key}/{pkg_id}  "
                         f"→  {cleanup_exc}")
             except Exception as exc:
-                self._gdwh_log_write(f"  [FAIL] Package: {pkg_id}  →  {exc}\n")
+                self._gdwh_log_write(
+                    f"  [FAIL] Package: {pkg_id}  |  Area: {pkg_area}  →  {exc}\n")
                 session_logger.warning(
-                    f"[GDWH FAIL] {env}/{gds_key}/{pkg_id}  →  {exc}")
+                    f"[GDWH FAIL] {env}/{gds_key}/{pkg_id}  Area: {pkg_area}  →  {exc}")
                 fail_list.append(pkg_id)
 
             self.after(0, lambda v=i: self._gdwh_progress.configure(value=v))
