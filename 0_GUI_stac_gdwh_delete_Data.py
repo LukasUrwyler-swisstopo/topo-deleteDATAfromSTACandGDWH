@@ -807,6 +807,17 @@ class KryDeleteApp(tk.Tk):
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
         ).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
 
+        ttk.Label(sec, text="AREA:").grid(row=1, column=3, sticky="w",
+                                           padx=(20, 8), pady=(6, 0))
+        self._gdwh_area_filter_var = tk.StringVar()
+        self._gdwh_area_filter_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
+        ttk.Entry(sec, textvariable=self._gdwh_area_filter_var, width=14).grid(
+            row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(
+            sec, text="z.B. OBERAAR  —  Leer = alle Areas",
+            font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
+        ).grid(row=1, column=5, sticky="w", padx=(8, 0), pady=(6, 0))
+
         ttk.Label(sec, text="GDS-Key:").grid(row=2, column=0, sticky="w",
                                               padx=(0, 8), pady=(6, 0))
         self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
@@ -2226,6 +2237,18 @@ class KryDeleteApp(tk.Tk):
                 # _gdwh_populate_list.
                 return True
             data = [item for item in data if _year_matches(item)]
+        area = self._gdwh_area_filter_var.get().strip()
+        if area:
+            def _area_matches(item):
+                _imp, match = item
+                area_val = (match.get("area", "") if match else "").strip()
+                # Kein Match / kein AREA-Attribut: analog zu Jahr/Auftragstyp
+                # NICHT ausblenden, sonst verschwinden Packages ohne
+                # auswertbare FileMetadata spurlos aus der gefilterten Liste.
+                if not area_val:
+                    return True
+                return area_val.strip().lower() == area.lower()
+            data = [item for item in data if _area_matches(item)]
         self._gdwh_populate_list(data)
 
     def _gdwh_reset_state(self):
