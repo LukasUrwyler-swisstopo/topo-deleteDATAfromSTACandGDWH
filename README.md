@@ -42,8 +42,8 @@ Das Fenster hat zwei Tabs:
 ## Tab GDWH — DataPackages löschen
 
 1. Umgebung wählen (INT zum Testen, PROD für Live-Daten)
-2. GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`) → **Imports laden**
-   Die Liste wird automatisch mit Auftragstyp, Area, Jahr und weiteren Infos angereichert.
+2. Auftragstyp (KRY/RAM/Alle) und Jahr wählen, GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`) → **Imports laden**
+   Die Liste wird automatisch mit Auftragstyp, Area, Jahr und weiteren Infos angereichert. Auftragstyp und Jahr filtern die bereits geladene Liste sofort weiter, ohne Neu-Laden.
 3. Gewünschte Packages ankreuzen
 4. Optional: E-Mail-Adresse für die Job-Benachrichtigung
 5. **Import Auswahl löschen** → Sicherheitsabfrage bestätigen

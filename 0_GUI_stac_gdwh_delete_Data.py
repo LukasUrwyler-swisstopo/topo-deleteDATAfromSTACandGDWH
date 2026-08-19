@@ -786,24 +786,35 @@ class KryDeleteApp(tk.Tk):
         sec.pack(fill="x", pady=(0, 6))
         sec.columnconfigure(1, weight=1)
 
-        ttk.Label(sec, text="Jahr:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(sec, text="Auftragstyp:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._gdwh_auftragstyp_var = tk.StringVar(value=list(AUFTRAGSTYPEN.keys())[0])
+        gdwh_typ_frame = ttk.Frame(sec)
+        gdwh_typ_frame.grid(row=0, column=1, columnspan=2, sticky="w")
+        for typ in AUFTRAGSTYPEN:
+            ttk.Radiobutton(
+                gdwh_typ_frame, text=typ, variable=self._gdwh_auftragstyp_var, value=typ,
+                command=self._gdwh_apply_filter,
+            ).pack(side="left", padx=(0, 14))
+
+        ttk.Label(sec, text="Jahr:").grid(row=1, column=0, sticky="w",
+                                           padx=(0, 8), pady=(6, 0))
         self._gdwh_year_filter_var = tk.StringVar()
         self._gdwh_year_filter_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
         ttk.Entry(sec, textvariable=self._gdwh_year_filter_var, width=8).grid(
-            row=0, column=1, sticky="w")
+            row=1, column=1, sticky="w", pady=(6, 0))
         ttk.Label(
             sec, text="z.B. 2023  —  Leer = alle Jahre",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
 
-        ttk.Label(sec, text="GDS-Key:").grid(row=1, column=0, sticky="w",
+        ttk.Label(sec, text="GDS-Key:").grid(row=2, column=0, sticky="w",
                                               padx=(0, 8), pady=(6, 0))
         self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
         self._gdwh_gds_combo = ttk.Combobox(
             sec, textvariable=self._gdwh_gds_key_var,
             values=GDWH_GDS_KEYS, state="readonly", width=28,
         )
-        self._gdwh_gds_combo.grid(row=1, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
+        self._gdwh_gds_combo.grid(row=2, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
         self._gdwh_gds_combo.bind(
             "<<ComboboxSelected>>", self._gdwh_on_gds_key_change)
 
@@ -811,7 +822,7 @@ class KryDeleteApp(tk.Tk):
             sec, text=self._GDWH_FETCH_BTN_LABEL,
             command=self._gdwh_fetch_imports, state="normal",
         )
-        self._gdwh_fetch_btn.grid(row=1, column=2, pady=(6, 0))
+        self._gdwh_fetch_btn.grid(row=2, column=2, pady=(6, 0))
 
     def _build_gdwh_step3(self, parent):
         sec = ttk.LabelFrame(parent, text="3   DataPackages auswählen zum Löschen",
@@ -2180,8 +2191,21 @@ class KryDeleteApp(tk.Tk):
     def _gdwh_apply_filter(self):
         if not hasattr(self, "_gdwh_enriched"):
             return
+        typ_filter = AUFTRAGSTYPEN.get(self._gdwh_auftragstyp_var.get(), "").strip().lower()
         year = self._gdwh_year_filter_var.get().strip()
         data = self._gdwh_enriched
+        if typ_filter:
+            def _typ_matches(item):
+                _imp, match = item
+                auftragstyp = (match.get("auftragstyp", "") if match else "").strip().lower()
+                # Kein Match / kein Auftragstyp-Attribut (z.B. FileMetadata
+                # noch nicht angereichert): analog zum Jahresfilter unten
+                # NICHT ausblenden, sonst verschwinden Packages ohne
+                # auswertbare FileMetadata spurlos aus der gefilterten Liste.
+                if not auftragstyp:
+                    return True
+                return typ_filter in auftragstyp
+            data = [item for item in data if _typ_matches(item)]
         if year:
             def _year_matches(item):
                 imp, match = item
