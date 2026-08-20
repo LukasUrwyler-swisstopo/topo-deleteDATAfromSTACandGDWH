@@ -28,7 +28,7 @@ import webbrowser
 from email.utils import parsedate
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
@@ -49,6 +49,25 @@ from gdwh_api import (
 # statt nur einen einzelnen. Kein echter GDS-Key, daher klar als Auswahl-Option
 # von GDWH_GDS_KEYS abgesetzt (nie an die GDWH-API übergeben).
 GDWH_ALL_GDS_OPTION = "Alle GDS"
+
+# GDWH indexiert den fileMetadata-Suchindex (Area/Jahr/Auftragstyp) zeitversetzt
+# zum eigentlichen Import – live verifiziert am 2026-08-20: ein Import von
+# vor >1h hatte noch keinen Match, alle älteren Imports desselben Tages
+# (ab ca. 4h zuvor) bereits. Innerhalb dieses Fensters ist "kein Match" also
+# normal und KEINE Anomalie. Erst danach gilt ein fehlender Match als
+# vermutlich verwaister Alt-Eintrag (siehe _gdwh_apply_filter).
+_GDWH_PENDING_HOURS = 24
+
+
+def _gdwh_is_pending(imp: Dict) -> bool:
+    """True, wenn ein Import jünger als _GDWH_PENDING_HOURS ist. Für so junge
+    Imports ist ein fehlender FileMetadata-Match durch die Indexierungs-
+    Verzögerung von GDWH erklärt, nicht durch eine echte Anomalie."""
+    try:
+        imp_dt = datetime.strptime(gdwh_import_date(imp), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return False
+    return datetime.now() - imp_dt < timedelta(hours=_GDWH_PENDING_HOURS)
 
 # ─── Farbpaletten ─────────────────────────────────────────────────────────────
 
@@ -141,29 +160,6 @@ def _status_label(sc: Optional[int]) -> Tuple[str, str]:
     if sc == -2:
         return "✗  timeout", "asset_warn"
     return "✗  err", "asset_warn"
-
-
-_CDN_HIT_HEADERS = ("X-Cache", "X-Cache-Status", "CF-Cache-Status")
-
-
-def _cdn_cache_note(cache_headers: Dict[str, str]) -> str:
-    """Kurzer Zusatz für die STATUS-Spalte, falls die HEAD-Antwort erkennbar
-    aus einem CDN-/Proxy-Cache statt frisch vom Origin kam (siehe
-    check_asset_info() in stac_api.py). Relevant für "laut STAC gelöscht,
-    href aber weiterhin downloadbar": eine gecachte Antwort (Cache-Hit bzw.
-    Age > 0) legt sich mit der Zeit von selbst; antwortet der Origin direkt
-    (keine dieser Header bzw. Age fehlt/0), deutet das auf eine unvollständige
-    Backend-Löschung hin – dann bleibt es dauerhaft downloadbar."""
-    if not cache_headers:
-        return ""
-    is_hit = any("hit" in cache_headers[h].lower()
-                 for h in _CDN_HIT_HEADERS if h in cache_headers)
-    age = cache_headers.get("Age", "")
-    age_val = int(age) if age.isdigit() else None
-    if is_hit or (age_val is not None and age_val > 0):
-        age_txt = f", Age {age_val}s" if age_val is not None else ""
-        return f"  ⚠ CDN-Cache{age_txt}"
-    return ""
 
 
 # ─── Bestätigungs-Dialog (STAC) ───────────────────────────────────────────────
@@ -334,8 +330,8 @@ class KryDeleteApp(tk.Tk):
 
     _GDWH_FETCH_BTN_LABEL        = "Imports laden"
     _GDWH_FETCH_BTN_LABEL_RELOAD = "Imports aktualisieren"
-    _GDWH_LEICHEN_BTN_LABEL      = "Historische GDWH-Leichen auflisten"
-    _GDWH_LEICHEN_BTN_LABEL_BACK = "Aktive GDWH-Daten anzeigen"
+    _GDWH_LEICHEN_BTN_LABEL      = f"GDWH-Anomalien anzeigen (>{_GDWH_PENDING_HOURS}h ohne Daten)"
+    _GDWH_LEICHEN_BTN_LABEL_BACK = "Zurück zur normalen Ansicht"
 
     def __init__(self):
         super().__init__()
@@ -863,7 +859,8 @@ class KryDeleteApp(tk.Tk):
             sec, text=self._GDWH_FETCH_BTN_LABEL,
             command=self._gdwh_fetch_imports, state="normal",
         )
-        self._gdwh_fetch_btn.grid(row=2, column=2, pady=(6, 0))
+        self._gdwh_fetch_btn.grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
     def _build_gdwh_step3(self, parent):
         sec = ttk.LabelFrame(parent, text="3   DataPackages auswählen zum Löschen",
@@ -886,12 +883,14 @@ class KryDeleteApp(tk.Tk):
         )
         self._gdwh_sel_none_btn.pack(side="left")
 
-        # Umschalter Aktive Daten ↔ historische Leichen (siehe
-        # _gdwh_apply_filter): standardmässig werden nur Imports mit
-        # FileMetadata-Match gezeigt (= wirklich noch in GDWH vorhanden).
-        # Imports ohne Match sind bereits gelöscht/nie vollständig importiert
-        # und bleiben nur als Historieneintrag in GET /data/imports sichtbar
-        # – erneutes "Löschen" wäre dort ein No-Op mit falschem Erfolgsstatus.
+        # Umschalter Normalansicht ↔ GDWH-Anomalien (siehe _gdwh_apply_filter):
+        # standardmässig werden Imports mit FileMetadata-Match sowie frisch
+        # importierte, noch nicht indexierte Imports gezeigt (pending, siehe
+        # _gdwh_is_pending). Nur Imports OHNE Match, die älter als
+        # _GDWH_PENDING_HOURS sind, gelten als Anomalie – vermutlich bereits
+        # gelöscht/nie vollständig importiert, nur noch als Historieneintrag
+        # in GET /data/imports sichtbar. Erneutes "Löschen" wäre dort ein
+        # No-Op mit falschem Erfolgsstatus.
         self._gdwh_show_leichen_var = tk.BooleanVar(value=False)
         self._gdwh_leichen_btn = ttk.Button(
             sel_row, text=self._GDWH_LEICHEN_BTN_LABEL,
@@ -1695,22 +1694,20 @@ class KryDeleteApp(tk.Tk):
                 if sc is None or sc != 200:
                     errors += 1
 
-                # Cache-/CDN-Header auswerten – Diagnosehilfe für den Fall
-                # "laut STAC gelöscht, href aber weiterhin downloadbar": ein
-                # erkennbarer Cache-Hit (Age > 0 / X-Cache: HIT) landet direkt
-                # sichtbar in der STATUS-Spalte der Liste, nicht nur im Log –
-                # legt sich mit der Zeit von selbst. Bleibt der Hinweis auch
-                # nach längerem Warten aus, obwohl der href weiterhin lädt,
-                # antwortet der Origin direkt (unvollständige Backend-Löschung).
+                # Cache-/CDN-Header nur ins Log, nicht in die STATUS-Spalte:
+                # ein Cache-Hit (Age > 0 / X-Cache: HIT) ist bei CDN-
+                # ausgelieferten Assets der Normalfall, auch bei völlig
+                # gesunden 200ern – als Badge neben ✓ 200 wirkte das wie ein
+                # Fehler. Für die gezielte Diagnose "laut STAC gelöscht, href
+                # aber weiterhin downloadbar" reicht der Header-Dump im Log.
                 cache_headers = info.get("cache_headers") or {}
-                stxt_disp = stxt + _cdn_cache_note(cache_headers)
 
-                self.after(0, lambda n=nid, i=iid, a=ak, s=stxt_disp, t=tg,
+                self.after(0, lambda n=nid, i=iid, a=ak, s=stxt, t=tg,
                            sz_=_fmt_size(sz), lm_=_fmt_date(lm):
                            self._update_tree_row(n, i, a, s, t, sz_, lm_))
                 cache_txt = ("  |  " + ", ".join(
                     f"{k}={v}" for k, v in cache_headers.items())) if cache_headers else ""
-                self._log_write(f"  {iid}/{ak}  →  {stxt_disp}  {_fmt_size(sz)}{cache_txt}\n")
+                self._log_write(f"  {iid}/{ak}  →  {stxt}  {_fmt_size(sz)}{cache_txt}\n")
 
         self._log_write(f"[Prüfung] {len(tasks)} Assets geprüft — {errors} fehlerhaft.\n")
         self.after(0, lambda: self._check_btn.config(state="normal"))
@@ -2130,8 +2127,9 @@ class KryDeleteApp(tk.Tk):
         # auftauchen bzw. herunterladbar bleiben, obwohl die Löschung (siehe
         # HTTP-Codes oben) bereits erfolgreich war. Per Test bestätigt: nach
         # ca. 15 Minuten sind sowohl Katalogeintrag als auch Download-Link
-        # weg (kein Backend-Bug, reine Propagationszeit) – siehe auch die
-        # CDN-Cache-Diagnose in "Assets prüfen" (_cdn_cache_note()).
+        # weg (kein Backend-Bug, reine Propagationszeit) – die vollen Cache-
+        # Header (Age, X-Cache, …) landen bei "Assets prüfen" weiterhin im
+        # Log (siehe _check_worker), nicht mehr in der STATUS-Spalte.
         delay_hint = ""
         if ok_list or items_deleted:
             delay_hint = (
@@ -2280,12 +2278,33 @@ class KryDeleteApp(tk.Tk):
             self._gdwh_imports = imports
             self._gdwh_enriched = enriched
             self.after(0, self._gdwh_apply_filter)
+
+            pending_count = sum(1 for imp, match in enriched
+                                 if match is None and _gdwh_is_pending(imp))
+            if pending_count:
+                self.after(50, lambda: self._gdwh_show_pending_notice(pending_count))
         except Exception as exc:
             self._gdwh_log_write(f"[FEHLER] {exc}\n")
             self.after(0, lambda: messagebox.showerror("GDWH Fehler", str(exc)))
             self.after(0, lambda: self._gdwh_fetch_btn.config(state="normal"))
             self.after(0, lambda: self._gdwh_preview_lbl.configure(
                 text="Fehler beim Laden."))
+
+    def _gdwh_show_pending_notice(self, count: int):
+        """Info-Popup nach dem Laden: weist auf frisch importierte, noch nicht
+        indexierte DataPackages hin (siehe _gdwh_is_pending/_GDWH_PENDING_HOURS).
+        Läuft nur einmal pro Ladevorgang, nicht bei jeder Filteränderung."""
+        messagebox.showinfo(
+            "Frisch importierte DataPackages",
+            f"{count} DataPackage(s) wurden erst kürzlich importiert. GDWH zeigt "
+            f"sie im Portal zwar bereits an, aktualisiert seinen FileMetadata-Index "
+            f"(Area/Jahr/Auftragstyp) aber zeitversetzt — das kann einige Stunden "
+            f"dauern.\n\n"
+            f"Diese Packages sind in der Liste mit „⏳ Frisch importiert“ markiert "
+            f"und vorerst nicht auswählbar/löschbar.\n\n"
+            f"Bitte in ein paar Stunden nochmals „{self._GDWH_FETCH_BTN_LABEL_RELOAD}“ "
+            f"klicken, um den aktuellen Stand zu prüfen."
+        )
 
     def _gdwh_toggle_leichen(self):
         active = not self._gdwh_show_leichen_var.get()
@@ -2298,17 +2317,28 @@ class KryDeleteApp(tk.Tk):
     def _gdwh_apply_filter(self):
         if not hasattr(self, "_gdwh_enriched"):
             return
-        # Aktive Daten (Standard) vs. historische Leichen (Toggle-Button):
-        # ein Import ohne FileMetadata-Match (match is None) existiert nicht
-        # mehr wirklich in GDWH – nur der Historieneintrag in GET /data/imports
-        # bleibt. Beide Ansichten sind strikt getrennt, damit Leichen nicht
-        # versehentlich als "löschbar" auftauchen (siehe _gdwh_populate_list:
-        # deletable erfordert match is not None).
+        # Drei Kategorien pro Import:
+        #   - "aktiv":   FileMetadata-Match vorhanden → normale Anzeige.
+        #   - "pending": kein Match, aber Import jünger als _GDWH_PENDING_HOURS
+        #                → GDWH hat die Attribute nur noch nicht nachindexiert,
+        #                keine Anomalie (live verifiziert 2026-08-20).
+        #   - "anomalie": kein Match und älter als _GDWH_PENDING_HOURS → existiert
+        #                vermutlich nicht mehr wirklich in GDWH (z.B. Rest einer
+        #                unvollständigen Löschung).
+        # Normalansicht zeigt aktiv+pending zusammen (siehe _gdwh_populate_list
+        # für die optische Unterscheidung); der Anomalien-Toggle zeigt nur
+        # "anomalie", strikt getrennt, damit diese nicht versehentlich als
+        # "löschbar" auftauchen (deletable erfordert match is not None).
         leichen_mode = self._gdwh_show_leichen_var.get()
         self._gdwh_leichen_btn.config(
             state="normal" if self._gdwh_enriched else "disabled")
+
+        def _is_anomalie(item):
+            imp, match = item
+            return match is None and not _gdwh_is_pending(imp)
+
         base = [item for item in self._gdwh_enriched
-                if (item[1] is None) == leichen_mode]
+                if _is_anomalie(item) == leichen_mode]
 
         typ_filter = AUFTRAGSTYPEN.get(self._gdwh_auftragstyp_var.get(), "").strip().lower()
         year = self._gdwh_year_filter_var.get().strip()
@@ -2358,7 +2388,10 @@ class KryDeleteApp(tk.Tk):
                 return area_val.strip().lower() == area.lower()
             data = [item for item in data if _area_matches(item)]
         self._gdwh_total_leichen = sum(
-            1 for _, match in self._gdwh_enriched if match is None)
+            1 for item in self._gdwh_enriched if _is_anomalie(item))
+        self._gdwh_total_pending = sum(
+            1 for imp, match in self._gdwh_enriched
+            if match is None and _gdwh_is_pending(imp))
         self._gdwh_populate_list(data, leichen_mode=leichen_mode)
 
     def _gdwh_reset_state(self):
@@ -2369,6 +2402,7 @@ class KryDeleteApp(tk.Tk):
         # werden bei der Löschung stets frisch/aktuell gelesen).
         self._gdwh_enriched = []
         self._gdwh_total_leichen = 0
+        self._gdwh_total_pending = 0
         self._gdwh_show_leichen_var.set(False)
         self._gdwh_leichen_btn.config(
             text=self._GDWH_LEICHEN_BTN_LABEL, state="disabled")
@@ -2380,7 +2414,7 @@ class KryDeleteApp(tk.Tk):
         # auf Ausgangstext zurücksetzen, sonst würde fälschlich "aktualisieren"
         # stehen (analog zu _on_env_change() im STAC-Tab).
         self._gdwh_loaded_once = False
-        self._gdwh_fetch_btn.config(text=self._GDWH_FETCH_BTN_LABEL)
+        self._gdwh_fetch_btn.config(text=self._GDWH_FETCH_BTN_LABEL, style="TButton")
 
     def _gdwh_clear_list(self):
         for w in self._gdwh_list_frame.winfo_children():
@@ -2405,14 +2439,17 @@ class KryDeleteApp(tk.Tk):
         if not enriched:
             tk.Label(
                 self._gdwh_list_frame,
-                text=("Keine historischen GDWH-Leichen gefunden." if leichen_mode
+                text=("Keine GDWH-Anomalien gefunden." if leichen_mode
                       else "Keine DataPackages gefunden."),
                 font=("Segoe UI", 9, "italic"),
                 bg=T["chk_bg"], fg=T["fg_dim"], padx=8, pady=8,
             ).pack(anchor="w")
-            self._gdwh_fetch_btn.config(state="normal")
+            self._gdwh_loaded_once = True
+            self._gdwh_fetch_btn.config(
+                state="normal", text=self._GDWH_FETCH_BTN_LABEL_RELOAD,
+                style="Amber.TButton")
             self._gdwh_preview_lbl.configure(
-                text="0 historische Leichen gefunden." if leichen_mode
+                text="0 GDWH-Anomalien gefunden." if leichen_mode
                      else "0 DataPackages gefunden.")
             return
 
@@ -2441,12 +2478,16 @@ class KryDeleteApp(tk.Tk):
             # Bei "?" (Normalfall) gilt: löschbar, bis der server-seitige
             # DELETE-Aufruf das Gegenteil zeigt (dann als [FAIL] im Log).
             deletable_by_status = pkg_status == "?" or pkg_status.lower() == "imported"
-            # Ohne FileMetadata-Match ist der Import bereits keine echten Daten
-            # mehr in GDWH (siehe _gdwh_apply_filter) – hier nur noch relevant,
-            # falls dieser Datensatz doch im Leichen-Modus gerendert wird.
-            # Ein DELETE darauf wäre ein No-Op, das GDWH trotzdem als "Erfolg"
+            # Ohne FileMetadata-Match ist entweder (a) der Import noch nicht
+            # indexiert ("pending", siehe _gdwh_is_pending) – dann kennen wir
+            # seine Attribute schlicht noch nicht – oder (b) er ist eine echte
+            # Anomalie und existiert vermutlich nicht mehr wirklich in GDWH
+            # (siehe _gdwh_apply_filter). In beiden Fällen sperren wir die
+            # Auswahl: bei (a) fehlen die Daten fürs sichere Löschen noch, bei
+            # (b) wäre ein DELETE ein No-Op, das GDWH trotzdem als "Erfolg"
             # quittiert, ohne dass es etwas zu löschen gäbe.
-            deletable = deletable_by_status and match is not None
+            pending    = match is None and _gdwh_is_pending(imp)
+            deletable  = deletable_by_status and match is not None
 
             auftragstyp   = match.get("auftragstyp", "")  if match else ""
             area          = match.get("area", "")          if match else ""
@@ -2494,10 +2535,12 @@ class KryDeleteApp(tk.Tk):
                 activebackground=T["chk_bg"], activeforeground=T["fg"],
             ).pack(side="left")
 
+            year_display = year if year else ("NEU" if pending else "????")
             tk.Label(
-                row1, text=year if year else "????",
+                row1, text=year_display,
                 font=("Cascadia Mono", 9, "bold"),
-                bg=T["chk_bg"], fg=T["fg"] if deletable else T["fg_dim"],
+                bg=T["chk_bg"],
+                fg=T["hint"] if pending else (T["fg"] if deletable else T["fg_dim"]),
                 anchor="w", width=5,
             ).pack(side="left")
 
@@ -2527,13 +2570,24 @@ class KryDeleteApp(tk.Tk):
                 ).pack(side="left")
 
             if match is None:
-                tk.Label(
-                    row1,
-                    text=f"    ⚠ Historisch — keine Daten mehr in GDWH "
-                         f"(kein FileMetadata-Match) — Import-UUID: {pkg_id}",
-                    font=("Segoe UI", 8, "bold"),
-                    bg=T["chk_bg"], fg=T["err"], anchor="w",
-                ).pack(side="left")
+                if pending:
+                    tk.Label(
+                        row1,
+                        text=f"    ⏳ Frisch importiert — Attribute (Area/Jahr) "
+                             f"folgen, sobald GDWH den Index aktualisiert hat "
+                             f"— Import-UUID: {pkg_id}",
+                        font=("Segoe UI", 8, "bold"),
+                        bg=T["chk_bg"], fg=T["hint"], anchor="w",
+                    ).pack(side="left")
+                else:
+                    tk.Label(
+                        row1,
+                        text=f"    ⚠ Kein FileMetadata-Match seit über "
+                             f"{_GDWH_PENDING_HOURS}h — vermutlich verwaist "
+                             f"(GDWH-Anomalie) — Import-UUID: {pkg_id}",
+                        font=("Segoe UI", 8, "bold"),
+                        bg=T["chk_bg"], fg=T["err"], anchor="w",
+                    ).pack(side="left")
                 copy_btn = tk.Button(
                     row1, text="⧉ Kopieren", font=("Segoe UI", 7),
                     bg=T["btn"], fg=T["fg"], relief="flat",
@@ -2584,7 +2638,8 @@ class KryDeleteApp(tk.Tk):
 
         self._gdwh_loaded_once = True
         self._gdwh_fetch_btn.config(
-            state="normal", text=self._GDWH_FETCH_BTN_LABEL_RELOAD)
+            state="normal", text=self._GDWH_FETCH_BTN_LABEL_RELOAD,
+            style="Amber.TButton")
         st = "normal" if (enriched and not leichen_mode) else "disabled"
         self._gdwh_sel_all_btn.config(state=st)
         self._gdwh_sel_none_btn.config(state=st)
@@ -2606,28 +2661,36 @@ class KryDeleteApp(tk.Tk):
         total        = getattr(self, "_gdwh_total_loaded", len(self._gdwh_selection))
         leichen_mode = self._gdwh_show_leichen_var.get()
         total_leichen = getattr(self, "_gdwh_total_leichen", 0)
+        total_pending = getattr(self, "_gdwh_total_pending", 0)
 
         if leichen_mode:
             self._gdwh_preview_lbl.configure(
-                text=f"{total} historische Leiche(n) — bereits nicht mehr in GDWH, "
-                     f"nur noch als Alt-Eintrag in der Import-Historie sichtbar. "
-                     f"Nicht auswählbar/löschbar."
+                text=f"{total} GDWH-Anomalie(n) — seit über {_GDWH_PENDING_HOURS}h "
+                     f"ohne FileMetadata-Match, vermutlich nicht mehr in GDWH "
+                     f"vorhanden. Nicht auswählbar/löschbar."
             )
             self._gdwh_del_btn.config(
                 text="Ausgewählte DataPackages (0) löschen …", state="disabled")
             self._apply_theme(self._dark)
             return
 
-        deletable   = len(self._gdwh_selection)
-        selected    = sum(v.get() for v in self._gdwh_selection.values())
-        locked_note = f"  |  {total - deletable} gesperrt (Status ≠ Imported)" \
-                      if total > deletable else ""
-        leichen_note = f"  |  {total_leichen} historische Leiche(n) ausgeblendet " \
+        deletable    = len(self._gdwh_selection)
+        selected     = sum(v.get() for v in self._gdwh_selection.values())
+        # total - deletable enthält sowohl status-gesperrte als auch pending
+        # (noch nicht indexierte) Packages – pending wird separat ausgewiesen,
+        # damit "gesperrt (Status ≠ Imported)" nicht fälschlich auf frische
+        # Importe zutrifft, die schlicht noch keine Attribute haben.
+        locked_status = total - deletable - total_pending
+        locked_note  = f"  |  {locked_status} gesperrt (Status ≠ Imported)" \
+                       if locked_status > 0 else ""
+        pending_note = f"  |  {total_pending} frisch importiert, noch nicht indexiert" \
+                        if total_pending else ""
+        leichen_note = f"  |  {total_leichen} Anomalie(n) ausgeblendet " \
                         f"(Button „{self._GDWH_LEICHEN_BTN_LABEL}“)" \
                         if total_leichen else ""
         self._gdwh_preview_lbl.configure(
             text=f"{total} DataPackage(s) geladen  |  {selected} ausgewählt zum Löschen"
-                 f"{locked_note}{leichen_note}"
+                 f"{locked_note}{pending_note}{leichen_note}"
         )
         self._gdwh_del_btn.config(
             text=f"Ausgewählte DataPackages ({selected}) löschen …",

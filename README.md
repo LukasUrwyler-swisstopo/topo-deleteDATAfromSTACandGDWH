@@ -46,7 +46,9 @@ Das Fenster hat zwei Tabs:
    Mit **Alle GDS** werden Imports über alle GDS-Keys hinweg geladen und in einer gemeinsamen Liste zusammengeführt — praktisch für einen GDS-Key-übergreifenden Überblick/Filter. Jede Zeile zeigt weiterhin ihren tatsächlichen GDS-Key an, die Löschung adressiert jedes Package korrekt mit seinem eigenen GDS-Key.
    Die Liste wird automatisch mit Auftragstyp, Area, Jahr und weiteren Infos angereichert. Auftragstyp und Jahr filtern die bereits geladene Liste sofort weiter, ohne Neu-Laden.
 
-   **Anomalie-Hinweis:** Findet sich zu einem Import kein FileMetadata-Eintrag (Area/Jahr nicht ableitbar, Jahr fällt auf das Import-Datum zurück), wird die Zeile rot mit `⚠ Kein FileMetadata-Match (GDWH-Anomalie)` markiert. Das deutet auf einen unsauberen GDWH-Zustand hin (z.B. eine frühere, unvollständige Löschung). Über den `⧉ Kopieren`-Button neben dem Hinweis lässt sich die Import-UUID zur weiteren Recherche in die Zwischenablage kopieren.
+   **Frisch importiert vs. Anomalie:** GDWH indexiert seinen FileMetadata-Suchindex (Area/Jahr/Auftragstyp) zeitversetzt zum eigentlichen Import — live verifiziert am 2026-08-20, kann mehrere Stunden dauern. Ein Import ohne FileMetadata-Match wird deshalb zweigeteilt behandelt:
+   - **Jünger als 24h:** gilt als „⏳ Frisch importiert“ (gelb), bleibt in der normalen Liste sichtbar, ist aber noch nicht auswählbar/löschbar, bis GDWH die Attribute nachgeliefert hat. Beim Laden erscheint dafür automatisch ein Hinweis-Popup.
+   - **Älter als 24h:** gilt als echte **GDWH-Anomalie** (rot, `⚠ Kein FileMetadata-Match seit über 24h`) und deutet auf einen unsauberen GDWH-Zustand hin (z.B. eine frühere, unvollständige Löschung). Diese Zeilen werden über den Button „GDWH-Anomalien anzeigen (>24h ohne Daten)“ separat eingeblendet, damit sie nicht mit frischen Imports verwechselt werden. Über den `⧉ Kopieren`-Button neben dem Hinweis lässt sich die Import-UUID zur weiteren Recherche in die Zwischenablage kopieren.
 3. Gewünschte Packages ankreuzen
 4. Optional: E-Mail-Adresse für die Job-Benachrichtigung
 5. **Import Auswahl löschen** → Sicherheitsabfrage bestätigen
