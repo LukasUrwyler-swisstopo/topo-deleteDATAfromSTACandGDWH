@@ -217,11 +217,26 @@ def abort_asset_upload(base_url: str, auth: Tuple, item_id: str,
     return ok, r.status_code, ("" if ok else _error_reason(r))
 
 
+# Header-Namen, die auf einen CDN-/Cache-Layer vor dem eigentlichen Storage
+# hindeuten (case-insensitive, requests.headers ist ein CaseInsensitiveDict).
+# Dient der Diagnose von "Asset ist laut STAC gelöscht, aber via href
+# weiterhin herunterladbar" – zeigt ob eine gecachte Kopie ausgeliefert wird
+# (Age/X-Cache/CF-Cache-Status > 0 bzw. HIT) oder der Origin selbst antwortet.
+_CACHE_DIAG_HEADERS = (
+    "Cache-Control", "Age", "ETag", "Via", "Server",
+    "X-Cache", "X-Cache-Status", "CF-Cache-Status",
+    "X-Amz-Cf-Id", "X-Amz-Cf-Pop", "X-Served-By",
+)
+
+
 def check_asset_info(href: str, auth: Tuple) -> Dict:
     """HEAD-Request auf Asset-URL.
-    Gibt dict mit status, size_bytes und last_modified zurück.
-    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception)."""
-    result: Dict = {"status": -1, "size_bytes": None, "last_modified": None}
+    Gibt dict mit status, size_bytes, last_modified und cache_headers zurück.
+    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception).
+    cache_headers: nur die in _CACHE_DIAG_HEADERS tatsächlich vorhandenen
+    Response-Header (leer, falls keiner davon gesetzt ist)."""
+    result: Dict = {"status": -1, "size_bytes": None, "last_modified": None,
+                    "cache_headers": {}}
     if not href:
         return result
     try:
@@ -237,6 +252,9 @@ def check_asset_info(href: str, auth: Tuple) -> Dict:
         lm = r.headers.get("Last-Modified")
         if lm:
             result["last_modified"] = lm
+        result["cache_headers"] = {
+            h: r.headers[h] for h in _CACHE_DIAG_HEADERS if h in r.headers
+        }
     except requests.exceptions.Timeout:
         result["status"] = -2
     except Exception:
