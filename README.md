@@ -42,7 +42,8 @@ Das Fenster hat zwei Tabs:
 ## Tab GDWH — DataPackages löschen
 
 1. Umgebung wählen (INT zum Testen, PROD für Live-Daten)
-2. Auftragstyp (KRY/RAM/Alle) und Jahr wählen, GDS-Key eingeben (z.B. `SB_DSM`, `SB_DOP`) → **Imports laden**
+2. Auftragstyp (KRY/RAM/Alle) und Jahr wählen, GDS-Key wählen (z.B. `SB_DSM`, `SB_DOP`) → **Imports laden**
+   Mit **Alle GDS** werden Imports über alle GDS-Keys hinweg geladen und in einer gemeinsamen Liste zusammengeführt — praktisch für einen GDS-Key-übergreifenden Überblick/Filter. Jede Zeile zeigt weiterhin ihren tatsächlichen GDS-Key an, die Löschung adressiert jedes Package korrekt mit seinem eigenen GDS-Key.
    Die Liste wird automatisch mit Auftragstyp, Area, Jahr und weiteren Infos angereichert. Auftragstyp und Jahr filtern die bereits geladene Liste sofort weiter, ohne Neu-Laden.
 
    **Anomalie-Hinweis:** Findet sich zu einem Import kein FileMetadata-Eintrag (Area/Jahr nicht ableitbar, Jahr fällt auf das Import-Datum zurück), wird die Zeile rot mit `⚠ Kein FileMetadata-Match (GDWH-Anomalie)` markiert. Das deutet auf einen unsauberen GDWH-Zustand hin (z.B. eine frühere, unvollständige Löschung). Über den `⧉ Kopieren`-Button neben dem Hinweis lässt sich die Import-UUID zur weiteren Recherche in die Zwischenablage kopieren.

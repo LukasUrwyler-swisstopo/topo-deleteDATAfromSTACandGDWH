@@ -45,6 +45,11 @@ from gdwh_api import (
     gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,
 )
 
+# Sentinel im GDS-Key-Dropdown: lädt/filtert Imports über alle GDS_KEYS hinweg
+# statt nur einen einzelnen. Kein echter GDS-Key, daher klar als Auswahl-Option
+# von GDWH_GDS_KEYS abgesetzt (nie an die GDWH-API übergeben).
+GDWH_ALL_GDS_OPTION = "Alle GDS"
+
 # ─── Farbpaletten ─────────────────────────────────────────────────────────────
 
 LIGHT = {
@@ -823,7 +828,7 @@ class KryDeleteApp(tk.Tk):
         self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
         self._gdwh_gds_combo = ttk.Combobox(
             sec, textvariable=self._gdwh_gds_key_var,
-            values=GDWH_GDS_KEYS, state="readonly", width=28,
+            values=[GDWH_ALL_GDS_OPTION] + GDWH_GDS_KEYS, state="readonly", width=28,
         )
         self._gdwh_gds_combo.grid(row=2, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
         self._gdwh_gds_combo.bind(
@@ -2180,31 +2185,42 @@ class KryDeleteApp(tk.Tk):
 
     def _gdwh_fetch_worker(self, gds_key: str):
         self._gdwh_current_gds_key = gds_key
+        keys_to_load = GDWH_GDS_KEYS if gds_key == GDWH_ALL_GDS_OPTION else [gds_key]
         try:
-            self._gdwh_log_write(f"[GDWH] Lade Imports für GDS-Key: {gds_key} …\n")
-            imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
-            self._gdwh_imports = imports
-            self._gdwh_log_write(f"[GDWH] {len(imports)} DataPackage(s) gefunden.\n")
-
-            # FileMetadata laden und Imports damit anreichern (Area/Jahr/LineID
-            # liegen dauerhaft im GDWH – unabhängig vom Ingest-Bucket, der nach
-            # erfolgreichem Import regelmässig geleert wird).
-            self._gdwh_log_write(f"[GDWH] Lade FileMetadata für GDS-Key: {gds_key} …\n")
-            file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, gds_key)
-            self._gdwh_log_write(
-                f"[GDWH] {len(file_metadata)} FileMetadata-Eintrag/Einträge gefunden.\n")
-            meta_index = gdwh_index_file_metadata_by_import(file_metadata)
-
-            # Jedem Import die passenden FileMetadata-Attribute zuordnen
+            imports: List[Dict] = []
             enriched = []
-            for imp in imports:
-                match = meta_index.get(gdwh_import_id(imp))
-                enriched.append((imp, match))
-                if match:
-                    self._gdwh_log_write(
-                        f"  → {gdwh_import_date(imp)}  Jahr={match['year']}"
-                        + (f"  [{match['area']}]" if match['area'] else "") + "\n")
+            for key in keys_to_load:
+                self._gdwh_log_write(f"[GDWH] Lade Imports für GDS-Key: {key} …\n")
+                key_imports = gdwh_get_imports(self._gdwh_base_url, key)
+                # gdsKey stammt zwar bereits aus der API-Antwort, wird hier aber
+                # explizit gesetzt – so bleibt jedes Import-Objekt eindeutig
+                # seinem GDS-Key zugeordnet (sicherheitskritisch bei "Alle GDS":
+                # die Löschung braucht pro Package den passenden GDS-Key, siehe
+                # _gdwh_delete_worker).
+                for imp in key_imports:
+                    imp["gdsKey"] = key
+                imports.extend(key_imports)
+                self._gdwh_log_write(f"[GDWH] {len(key_imports)} DataPackage(s) gefunden.\n")
 
+                # FileMetadata laden und Imports damit anreichern (Area/Jahr/LineID
+                # liegen dauerhaft im GDWH – unabhängig vom Ingest-Bucket, der nach
+                # erfolgreichem Import regelmässig geleert wird).
+                self._gdwh_log_write(f"[GDWH] Lade FileMetadata für GDS-Key: {key} …\n")
+                file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, key)
+                self._gdwh_log_write(
+                    f"[GDWH] {len(file_metadata)} FileMetadata-Eintrag/Einträge gefunden.\n")
+                meta_index = gdwh_index_file_metadata_by_import(file_metadata)
+
+                # Jedem Import die passenden FileMetadata-Attribute zuordnen
+                for imp in key_imports:
+                    match = meta_index.get(gdwh_import_id(imp))
+                    enriched.append((imp, match))
+                    if match:
+                        self._gdwh_log_write(
+                            f"  → {gdwh_import_date(imp)}  Jahr={match['year']}"
+                            + (f"  [{match['area']}]" if match['area'] else "") + "\n")
+
+            self._gdwh_imports = imports
             self._gdwh_enriched = enriched
             self.after(0, self._gdwh_apply_filter)
         except Exception as exc:
@@ -2409,7 +2425,7 @@ class KryDeleteApp(tk.Tk):
                 anchor="w",
             ).pack(side="left")
 
-            gds_key = getattr(self, "_gdwh_current_gds_key", "")
+            gds_key = imp.get("gdsKey") or getattr(self, "_gdwh_current_gds_key", "")
             file_format = match.get("file_format", "") if match else ""
             gds_key_label = f"[{gds_key}" + (f" · {file_format}]" if file_format else "]")
             if gds_key:
@@ -2624,23 +2640,31 @@ class KryDeleteApp(tk.Tk):
             f"Jahr: {meta_year} | AREA: {meta_area_full} | StacDatetime: {meta_stac_dt} | "
             f"Packages: {len(pkg_ids)}")
 
-        # Area je Package für die Einzelzeilen (OK/FAIL) unten nachschlagbar
+        # Area/GDS-Key je Package für die Einzelzeilen (OK/FAIL) unten
+        # nachschlagbar. Der GDS-Key kommt bewusst aus dem geladenen Import
+        # (imp["gdsKey"]) statt aus dem einen Dropdown-Wert: bei "Alle GDS"
+        # steht dort nur das Sentinel, und jedes Package muss beim DELETE-
+        # Aufruf mit seinem tatsächlichen GDS-Key adressiert werden.
         area_by_pkg = {pid: ((m.get("area", "") if m else "") or "unbekannt")
                        for pid, (_imp, m) in enriched_map.items()}
+        gds_key_by_pkg = {pid: (imp.get("gdsKey") or gds_key)
+                          for pid, (imp, _m) in enriched_map.items()}
 
         for i, pkg_id in enumerate(pkg_ids, 1):
-            pkg_area = area_by_pkg.get(pkg_id, "unbekannt")
+            pkg_area    = area_by_pkg.get(pkg_id, "unbekannt")
+            pkg_gds_key = gds_key_by_pkg.get(pkg_id, gds_key)
             try:
                 job = gdwh_delete_import(
                     base_url,
-                    gds_key, pkg_id, email)
+                    pkg_gds_key, pkg_id, email)
                 job_id     = job.get("id", "?")
                 job_status = job.get("status", "gestartet")
                 self._gdwh_log_write(
-                    f"  [OK]  Package gelöscht: {pkg_id}  |  Area: {pkg_area}\n"
+                    f"  [OK]  Package gelöscht: {pkg_id}  |  GDS-Key: {pkg_gds_key}"
+                    f"  |  Area: {pkg_area}\n"
                     f"        Job-ID: {job_id}  |  Status: {job_status}\n")
                 session_logger.info(
-                    f"[GDWH OK] {env}/{gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
+                    f"[GDWH OK] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
                 ok_list.append(pkg_id)
 
                 # Bucket aufräumen: falls noch ein DataPackage-Ordner mit
@@ -2649,24 +2673,25 @@ class KryDeleteApp(tk.Tk):
                 # das Package im GDWH-Portal als "hängendes" DataPackage
                 # sichtbar und blockiert einen sauberen Neu-Import.
                 try:
-                    cleaned = gdwh_cleanup_data_package(base_url, gds_key, pkg_id)
+                    cleaned = gdwh_cleanup_data_package(base_url, pkg_gds_key, pkg_id)
                     if cleaned is not None:
                         self._gdwh_log_write(
                             "        Bucket-DataPackage ebenfalls gelöscht.\n")
                         session_logger.info(
-                            f"[GDWH BUCKET CLEANUP OK] {env}/{gds_key}/{pkg_id}")
+                            f"[GDWH BUCKET CLEANUP OK] {env}/{pkg_gds_key}/{pkg_id}")
                 except Exception as cleanup_exc:
                     self._gdwh_log_write(
                         f"        [WARNUNG] Bucket-DataPackage konnte nicht "
                         f"gelöscht werden: {cleanup_exc}\n")
                     session_logger.warning(
-                        f"[GDWH BUCKET CLEANUP FAIL] {env}/{gds_key}/{pkg_id}  "
+                        f"[GDWH BUCKET CLEANUP FAIL] {env}/{pkg_gds_key}/{pkg_id}  "
                         f"→  {cleanup_exc}")
             except Exception as exc:
                 self._gdwh_log_write(
-                    f"  [FAIL] Package: {pkg_id}  |  Area: {pkg_area}  →  {exc}\n")
+                    f"  [FAIL] Package: {pkg_id}  |  GDS-Key: {pkg_gds_key}"
+                    f"  |  Area: {pkg_area}  →  {exc}\n")
                 session_logger.warning(
-                    f"[GDWH FAIL] {env}/{gds_key}/{pkg_id}  Area: {pkg_area}  →  {exc}")
+                    f"[GDWH FAIL] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  →  {exc}")
                 fail_list.append(pkg_id)
 
             self.after(0, lambda v=i: self._gdwh_progress.configure(value=v))
