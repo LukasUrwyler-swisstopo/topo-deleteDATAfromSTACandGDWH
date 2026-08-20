@@ -7,7 +7,8 @@ Kleines GUI-Tool, um Daten gezielt aus dem **Geodata-Warehouse (GDWH)** und aus 
 ## Starten
 
 ```bash
-python 0_GUI_stac_gdwh_delete_Data.py
+Eingabe in cmd-Terminal:
+...>python ...pfad/0_GUI_stac_gdwh_delete_Data.py
 ```
 
 Das Fenster hat zwei Tabs:
