@@ -24,7 +24,10 @@ Das Fenster hat zwei Tabs:
 ## Voraussetzungen
 
 - Python 3.6+, Pakete `requests` und `requests-negotiate-sspi` (werden beim Start automatisch nachinstalliert, falls sie fehlen)
-- STAC-Zugangsdaten in `secrets/stac_credentials.json` (Vorlage siehe unten) — für GDWH reicht die Windows-Anmeldung
+- Für den STAC-Tab braucht das Script den `secrets/`-Ordner mit der Datei
+  `secrets/stac_credentials.json` (Vorlage siehe unten). Diese Zugangsdaten
+  müssen vom Benutzer bei TBKN/swisstopo angefragt werden — für GDWH reicht
+  die Windows-Anmeldung
 - GDWH ist nur im internen Netz / VPN erreichbar
 
 ```json

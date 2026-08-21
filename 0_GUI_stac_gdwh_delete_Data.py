@@ -2322,13 +2322,17 @@ class KryDeleteApp(tk.Tk):
         #   - "pending": kein Match, aber Import jünger als _GDWH_PENDING_HOURS
         #                → GDWH hat die Attribute nur noch nicht nachindexiert,
         #                keine Anomalie (live verifiziert 2026-08-20).
-        #   - "anomalie": kein Match und älter als _GDWH_PENDING_HOURS → existiert
-        #                vermutlich nicht mehr wirklich in GDWH (z.B. Rest einer
-        #                unvollständigen Löschung).
-        # Normalansicht zeigt aktiv+pending zusammen (siehe _gdwh_populate_list
-        # für die optische Unterscheidung); der Anomalien-Toggle zeigt nur
-        # "anomalie", strikt getrennt, damit diese nicht versehentlich als
-        # "löschbar" auftauchen (deletable erfordert match is not None).
+        #   - "anomalie": kein Match und älter als _GDWH_PENDING_HOURS → GDWH
+        #                hat dafür (noch) keinen FileMetadata-Eintrag geliefert.
+        # WICHTIG: alle drei Kategorien werden in der Normalansicht IMMER
+        # angezeigt (jede reale /data/imports-Zeile bleibt sichtbar, auch ohne
+        # FileMetadata-Match – ein fehlender Match beweist nicht, dass die
+        # Daten nicht mehr in GDWH existieren, siehe Portal-Abgleich). Sie
+        # bleiben aber nicht auswählbar/löschbar (deletable erfordert match is
+        # not None, siehe _gdwh_populate_list) – nur die reine Sichtbarkeit
+        # wird hier gefixt, die Lösch-Sicherheitssperre bleibt unverändert.
+        # Der Anomalien-Toggle filtert zusätzlich auf NUR "anomalie", er
+        # blendet in der Normalansicht nichts aus.
         leichen_mode = self._gdwh_show_leichen_var.get()
         self._gdwh_leichen_btn.config(
             state="normal" if self._gdwh_enriched else "disabled")
@@ -2337,8 +2341,10 @@ class KryDeleteApp(tk.Tk):
             imp, match = item
             return match is None and not _gdwh_is_pending(imp)
 
-        base = [item for item in self._gdwh_enriched
-                if _is_anomalie(item) == leichen_mode]
+        if leichen_mode:
+            base = [item for item in self._gdwh_enriched if _is_anomalie(item)]
+        else:
+            base = list(self._gdwh_enriched)
 
         typ_filter = AUFTRAGSTYPEN.get(self._gdwh_auftragstyp_var.get(), "").strip().lower()
         year = self._gdwh_year_filter_var.get().strip()
@@ -2583,8 +2589,9 @@ class KryDeleteApp(tk.Tk):
                     tk.Label(
                         row1,
                         text=f"    ⚠ Kein FileMetadata-Match seit über "
-                             f"{_GDWH_PENDING_HOURS}h — vermutlich verwaist "
-                             f"(GDWH-Anomalie) — Import-UUID: {pkg_id}",
+                             f"{_GDWH_PENDING_HOURS}h — nicht löschbar, bis "
+                             f"geklärt ist ob die Daten noch existieren "
+                             f"— Import-UUID: {pkg_id}",
                         font=("Segoe UI", 8, "bold"),
                         bg=T["chk_bg"], fg=T["err"], anchor="w",
                     ).pack(side="left")
@@ -2666,8 +2673,8 @@ class KryDeleteApp(tk.Tk):
         if leichen_mode:
             self._gdwh_preview_lbl.configure(
                 text=f"{total} GDWH-Anomalie(n) — seit über {_GDWH_PENDING_HOURS}h "
-                     f"ohne FileMetadata-Match, vermutlich nicht mehr in GDWH "
-                     f"vorhanden. Nicht auswählbar/löschbar."
+                     f"ohne FileMetadata-Match (Filter auf diese Kategorie). "
+                     f"Nicht auswählbar/löschbar, bis der Match geklärt ist."
             )
             self._gdwh_del_btn.config(
                 text="Ausgewählte DataPackages (0) löschen …", state="disabled")
@@ -2676,17 +2683,18 @@ class KryDeleteApp(tk.Tk):
 
         deletable    = len(self._gdwh_selection)
         selected     = sum(v.get() for v in self._gdwh_selection.values())
-        # total - deletable enthält sowohl status-gesperrte als auch pending
-        # (noch nicht indexierte) Packages – pending wird separat ausgewiesen,
-        # damit "gesperrt (Status ≠ Imported)" nicht fälschlich auf frische
-        # Importe zutrifft, die schlicht noch keine Attribute haben.
-        locked_status = total - deletable - total_pending
+        # total - deletable enthält status-gesperrte, pending (noch nicht
+        # indexierte) UND Anomalie-Packages (kein FileMetadata-Match) – beide
+        # Kategorien werden separat ausgewiesen, damit "gesperrt (Status ≠
+        # Imported)" nicht fälschlich auf frische Importe oder Anomalien
+        # zutrifft, die aus anderen Gründen (noch) nicht löschbar sind.
+        locked_status = total - deletable - total_pending - total_leichen
         locked_note  = f"  |  {locked_status} gesperrt (Status ≠ Imported)" \
                        if locked_status > 0 else ""
         pending_note = f"  |  {total_pending} frisch importiert, noch nicht indexiert" \
                         if total_pending else ""
-        leichen_note = f"  |  {total_leichen} Anomalie(n) ausgeblendet " \
-                        f"(Button „{self._GDWH_LEICHEN_BTN_LABEL}“)" \
+        leichen_note = f"  |  {total_leichen} ohne FileMetadata-Match, nicht löschbar " \
+                        f"(Button „{self._GDWH_LEICHEN_BTN_LABEL}“ zum Filtern)" \
                         if total_leichen else ""
         self._gdwh_preview_lbl.configure(
             text=f"{total} DataPackage(s) geladen  |  {selected} ausgewählt zum Löschen"
