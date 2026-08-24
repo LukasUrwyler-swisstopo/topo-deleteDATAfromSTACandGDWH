@@ -26,6 +26,12 @@ STAC_SSL_VERIFY: bool = True
 
 COLLECTION_ID = "ch.swisstopo.spezialbefliegungen"
 
+# CloudFront blockiert HEAD/GET (ohne Range) für Objekte > 50 GB mit Status 400
+# (siehe swisstopo-Anleitung "Downloading Large Assets (> 50 GB)"). Ein 400 auf
+# HEAD ist für solche Assets also korrekt und kein echter Fehler – siehe
+# _probe_large_asset/check_asset_info.
+LARGE_ASSET_THRESHOLD_BYTES = 50 * 1024 ** 3
+
 ENVIRONMENTS = {
     "INT":  "https://sys-data.int.bgdi.ch/api/stac/v0.9/",
     "PROD": "https://data.geo.admin.ch/api/stac/v0.9/",
@@ -229,10 +235,39 @@ _CACHE_DIAG_HEADERS = (
 )
 
 
+def _probe_large_asset(href: str, auth: Tuple) -> Optional[int]:
+    """Prüft per GET Range: bytes=0-0, ob ein Asset > 50 GB ist (CloudFront
+    blockiert HEAD/GET für solche Objekte mit Status 400, siehe swisstopo-
+    Anleitung 'Downloading Large Assets (> 50 GB)'). Der Range-Request geht
+    direkt an den S3-Origin und liefert bei Erfolg 206 mit Content-Range.
+    Gibt die Gesamtgrösse in Bytes zurück, wenn das Asset tatsächlich > 50 GB
+    ist, sonst None (dann war der 400er ein echter Fehler)."""
+    headers = {"Range": "bytes=0-0"}
+    try:
+        r = _request(requests.get, href, headers=headers, verify=STAC_SSL_VERIFY,
+                    timeout=(5, 15), allow_redirects=True, stream=True)
+        if r.status_code in (401, 403):
+            r = _request(requests.get, href, headers=headers, auth=auth,
+                        verify=STAC_SSL_VERIFY, timeout=(5, 15),
+                        allow_redirects=True, stream=True)
+        r.close()
+        if r.status_code != 206:
+            return None
+        m = re.search(r"/(\d+)\s*$", r.headers.get("Content-Range", ""))
+        if not m:
+            return None
+        total_size = int(m.group(1))
+        return total_size if total_size > LARGE_ASSET_THRESHOLD_BYTES else None
+    except Exception:
+        return None
+
+
 def check_asset_info(href: str, auth: Tuple) -> Dict:
     """HEAD-Request auf Asset-URL.
     Gibt dict mit status, size_bytes, last_modified und cache_headers zurück.
-    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception).
+    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception,
+    -4=Asset > 50 GB, von CloudFront korrekterweise mit 400 auf HEAD
+    beantwortet – siehe _probe_large_asset).
     cache_headers: nur die in _CACHE_DIAG_HEADERS tatsächlich vorhandenen
     Response-Header (leer, falls keiner davon gesetzt ist)."""
     result: Dict = {"status": -1, "size_bytes": None, "last_modified": None,
@@ -255,6 +290,12 @@ def check_asset_info(href: str, auth: Tuple) -> Dict:
         result["cache_headers"] = {
             h: r.headers[h] for h in _CACHE_DIAG_HEADERS if h in r.headers
         }
+
+        if r.status_code == 400:
+            total_size = _probe_large_asset(href, auth)
+            if total_size is not None:
+                result["status"]     = -4
+                result["size_bytes"] = total_size
     except requests.exceptions.Timeout:
         result["status"] = -2
     except Exception:

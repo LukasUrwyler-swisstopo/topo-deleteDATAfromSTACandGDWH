@@ -155,6 +155,8 @@ def _status_label(sc: Optional[int]) -> Tuple[str, str]:
         return "–", "asset_dim"
     if sc == 200:
         return "✓  200", "asset_ok"
+    if sc == -4:
+        return "✓  >50GB", "asset_ok"
     if sc > 0:
         return f"✗  {sc}", "asset_err"
     if sc == -2:
@@ -1691,7 +1693,7 @@ class KryDeleteApp(tk.Tk):
                 sz       = info.get("size_bytes")
                 lm       = info.get("last_modified")
                 stxt, tg = _status_label(sc)
-                if sc is None or sc != 200:
+                if sc is None or (sc != 200 and sc != -4):
                     errors += 1
 
                 # Cache-/CDN-Header nur ins Log, nicht in die STATUS-Spalte:

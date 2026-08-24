@@ -146,6 +146,26 @@ class TestCheckAssetInfo:
         assert result["size_bytes"] == 12345
         assert result["last_modified"] == headers["Last-Modified"]
 
+    def test_400_ueber_50gb_gibt_minus_4(self):
+        """CloudFront antwortet auf HEAD für Assets > 50 GB korrekterweise mit
+        400 - der Range-Probe (GET Range: bytes=0-0) bestätigt die Grösse per
+        206/Content-Range, daraufhin soll status auf -4 (kein Fehler) wechseln."""
+        total_size = 60 * 1024 ** 3
+        range_resp = self._resp(206, {"Content-Range": f"bytes 0-0/{total_size}"})
+        with patch("stac_api.requests.head", return_value=self._resp(400)), \
+             patch("stac_api.requests.get", return_value=range_resp):
+            result = check_asset_info(self.URL, AUTH)
+        assert result["status"] == -4
+        assert result["size_bytes"] == total_size
+
+    def test_400_unter_50gb_bleibt_echter_fehler(self):
+        """Ein 400 ohne bestätigte Range-Antwort > 50 GB ist ein echter
+        Fehler und darf nicht als -4 maskiert werden."""
+        with patch("stac_api.requests.head", return_value=self._resp(400)), \
+             patch("stac_api.requests.get", return_value=self._resp(404)):
+            result = check_asset_info(self.URL, AUTH)
+        assert result["status"] == 400
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # get_item_direct
