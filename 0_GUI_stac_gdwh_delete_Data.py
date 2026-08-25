@@ -1,7 +1,7 @@
 """
 0_GUI_stac_gdwh_delete_Data.py  –  STAC / GDWH Deleting-Tool
 
-Tab 1 – STAC Assets:
+Tab 1 – STAC Items & Assets:
   Löscht Assets/Items aus der Collection "ch.swisstopo.spezialbefliegungen".
   Credentials: secrets/stac_credentials.json
   Format: {"INT": {"username": "...", "password": "..."}, "PROD": {...}}
@@ -460,7 +460,7 @@ class KryDeleteApp(tk.Tk):
 
         # ── Tab 1: STAC ───────────────────────────────────────────────────────
         stac_tab = ttk.Frame(self._nb)
-        self._nb.add(stac_tab, text="  STAC  Assets  ")
+        self._nb.add(stac_tab, text="  STAC  Items & Assets  ")
 
         outer = ttk.Frame(stac_tab)
         outer.pack(fill="both", expand=True)
@@ -493,11 +493,7 @@ class KryDeleteApp(tk.Tk):
         self._nb.add(gdwh_tab, text="  GDWH  Imports  ")
         self._build_gdwh_tab(gdwh_tab)
 
-        # GDWH-Tab wird häufiger genutzt als STAC Assets – vor STAC einreihen
-        # und beim Start auch direkt anzeigen (sonst bleibt trotz Neueinreihung
-        # der zuerst hinzugefügte STAC-Tab als aktive Auswahl stehen).
-        self._nb.insert(0, gdwh_tab)
-        self._nb.select(gdwh_tab)
+        self._nb.select(stac_tab)
 
     def _on_tab_changed(self, _):
         """Mausrad-Scrollziel je nach aktivem Tab umschalten."""
