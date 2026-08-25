@@ -8,7 +8,8 @@ Eingabe im cmd-Terminal:
 ```bash
 python pfad/0_GUI_stac_gdwh_delete_Data.py
 ```
-<img width="958" height="1027" alt="grafik" src="https://github.com/user-attachments/assets/618f4c2e-ab3b-4285-a292-49123efd2ca8" />
+<img width="713" height="676" alt="image" src="https://github.com/user-attachments/assets/6c11bb18-c7a4-4faf-8f76-7624d0f838a9" />
+
 
 Das Fenster hat zwei Tabs:
 
