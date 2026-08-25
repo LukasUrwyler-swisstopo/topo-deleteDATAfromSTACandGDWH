@@ -56,7 +56,13 @@ Das Fenster hat zwei Tabs:
 4. Optional: E-Mail-Adresse für die Job-Benachrichtigung
 5. **Import Auswahl löschen** → Sicherheitsabfrage bestätigen
 
-Die Löschung läuft asynchron als Job im GDWH; Fortschritt/Abschluss siehe Log bzw. E-Mail.
+Die Löschung läuft asynchron als Job im GDWH und passiert in drei Schritten:
+
+1. **Alle** Lösch-Jobs werden zuerst gestartet (`DELETE /api/geodatasets/{gdsKey}/data/imports/{id}`) — bei einer Batch-Löschung wartet das Tool nicht seriell auf einen Job, bevor der nächste startet.
+2. Alle gestarteten Jobs werden anschliessend gemeinsam/interleaved verfolgt (`GET /api/jobs/{jobId}`, alle 4s), bis jeder einen Endstatus meldet oder nach 300s pro Job das Timeout erreicht ist. Live-Fortschritt in der Statusanzeige, Details im Log.
+3. Erst nach bestätigtem Job-Erfolg räumt das Tool zusätzlich den Ingest-Bucket auf (`DELETE .../dataPackages/{id}`) — so wird der Bucket nicht während eines noch laufenden Lösch-Jobs angerührt.
+
+Jedes Package landet danach in einer von drei Kategorien: **Erfolgreich bestätigt** (Job-Status meldet Erfolg), **Fehlgeschlagen** (DELETE-Request oder Job selbst melden einen Fehler) oder **Status unklar/Timeout** (kein eindeutiger Endstatus innert 300s — bleibt bewusst in der Liste stehen, kein automatischer Bucket-Cleanup, muss manuell per Log/E-Mail/GDWH-Portal geprüft werden).
 
 ---
 

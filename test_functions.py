@@ -24,6 +24,8 @@ from gdwh_api import (
     GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_delete_import,
     gdwh_delete_data_package, gdwh_cleanup_data_package,
+    gdwh_get_job, gdwh_wait_for_jobs,
+    GDWH_JOB_STATUS_SUCCESS, GDWH_JOB_STATUS_FAILURE,
     gdwh_import_id, gdwh_import_date,
     gdwh_import_footprint_bbox,
     gdwh_bucket_path,
@@ -661,6 +663,142 @@ class TestGdwhDeleteImport:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# gdwh_get_job / GDWH_JOB_STATUS_* (gemockt)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhGetJob:
+
+    JOB_ID = 42
+
+    def test_url_korrekt_aufgebaut(self):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, {"id": self.JOB_ID, "status": "Running"})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            gdwh_get_job(GDWH_BASE, self.JOB_ID)
+        url = session.get.call_args[0][0]
+        assert f"api/jobs/{self.JOB_ID}" in url
+
+    def test_job_objekt_wird_zurueckgegeben(self):
+        job = {"id": self.JOB_ID, "status": "Running", "progress": 30}
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, job)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_get_job(GDWH_BASE, self.JOB_ID)
+        assert result == job
+
+    def test_http_fehler_wird_weitergegeben(self):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(404, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            with pytest.raises(req_module.HTTPError):
+                gdwh_get_job(GDWH_BASE, self.JOB_ID)
+
+
+class TestGdwhJobStatusSets:
+
+    def test_erfolg_keywords_enthalten(self):
+        assert "completed" in GDWH_JOB_STATUS_SUCCESS
+        assert "success"   in GDWH_JOB_STATUS_SUCCESS
+
+    def test_fehler_keywords_enthalten(self):
+        assert "failed" in GDWH_JOB_STATUS_FAILURE
+        assert "error"  in GDWH_JOB_STATUS_FAILURE
+
+    def test_keine_ueberschneidung_erfolg_fehler(self):
+        assert GDWH_JOB_STATUS_SUCCESS.isdisjoint(GDWH_JOB_STATUS_FAILURE)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# gdwh_wait_for_jobs – interleaved Polling mehrerer Jobs (gemockt)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGdwhWaitForJobs:
+
+    def test_einzelner_job_sofort_erfolgreich(self):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, {"id": 1, "status": "Completed"})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
+        assert result["pkg-1"]["status"] == "Completed"
+        assert session.get.call_count == 1
+
+    def test_job_wird_erst_nach_mehreren_polls_terminal(self):
+        session = _mock_gdwh_session()
+        session.get.side_effect = [
+            _mock_response(200, {"id": 1, "status": "Running"}),
+            _mock_response(200, {"id": 1, "status": "Running"}),
+            _mock_response(200, {"id": 1, "status": "Completed"}),
+        ]
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
+        assert result["pkg-1"]["status"] == "Completed"
+        assert session.get.call_count == 3
+
+    def test_fehlgeschlagener_job_gilt_als_terminal(self):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(
+            200, {"id": 1, "status": "Failed", "result": "boom"})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
+        assert result["pkg-1"]["status"] == "Failed"
+
+    def test_mehrere_jobs_werden_unabhaengig_voneinander_verfolgt(self):
+        """Job 2 ist sofort fertig, Job 1 erst in Runde 2 – Polling darf nicht
+        seriell auf Job 1 warten, bevor Job 2 überhaupt abgefragt wird (das
+        war die ursprüngliche, zu langsame Umsetzung für Batch-Löschungen)."""
+        responses = {
+            1: iter([_mock_response(200, {"id": 1, "status": "Running"}),
+                     _mock_response(200, {"id": 1, "status": "Completed"})]),
+            2: iter([_mock_response(200, {"id": 2, "status": "Completed"})]),
+        }
+
+        def _get(url, **kwargs):
+            job_id = 1 if url.rstrip("/").endswith("/1") else 2
+            return next(responses[job_id])
+
+        session = _mock_gdwh_session()
+        session.get.side_effect = _get
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(
+                GDWH_BASE, {"pkg-1": 1, "pkg-2": 2}, timeout=5, interval=0.01)
+        assert result["pkg-1"]["status"] == "Completed"
+        assert result["pkg-2"]["status"] == "Completed"
+
+    def test_timeout_gibt_letzten_bekannten_stand_zurueck(self):
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, {"id": 1, "status": "Running"})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=0.05, interval=0.02)
+        assert result["pkg-1"]["status"] == "Running"
+
+    def test_transiente_get_fehler_werden_ignoriert_und_erneut_versucht(self):
+        session = _mock_gdwh_session()
+        session.get.side_effect = [
+            req_module.exceptions.ConnectionError("hiccup"),
+            _mock_response(200, {"id": 1, "status": "Completed"}),
+        ]
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
+        assert result["pkg-1"]["status"] == "Completed"
+
+    def test_on_poll_callback_wird_mit_key_und_job_aufgerufen(self):
+        calls = []
+        session = _mock_gdwh_session()
+        session.get.return_value = _mock_response(200, {"id": 1, "status": "Completed"})
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01,
+                               on_poll=lambda k, j: calls.append((k, j["status"])))
+        assert calls == [("pkg-1", "Completed")]
+
+    def test_leeres_mapping_gibt_leeres_ergebnis_ohne_request(self):
+        session = _mock_gdwh_session()
+        with patch("gdwh_api._gdwh_session", return_value=session):
+            result = gdwh_wait_for_jobs(GDWH_BASE, {}, timeout=5, interval=0.01)
+        assert result == {}
+        session.get.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # gdwh_delete_data_package / gdwh_cleanup_data_package (gemockt)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -719,6 +857,42 @@ class TestGdwhCleanupDataPackage:
         with patch("gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+
+    def test_transienter_409_wird_wiederholt_und_gelingt_dann(self):
+        """Der Haupt-Lösch-Job läuft asynchron weiter; ein Cleanup direkt
+        danach kann auf einen kurzzeitigen Konflikt (409) treffen. Das darf
+        nicht sofort als Fehler gelten, sondern soll mit Wartezeit erneut
+        versucht werden (siehe _CLEANUP_TRANSIENT_STATUS)."""
+        session = _mock_gdwh_session()
+        session.delete.side_effect = [
+            _mock_response(409, raise_on_status=True),
+            _mock_response(200, {"status": "deleted"}),
+        ]
+        with patch("gdwh_api._gdwh_session", return_value=session), \
+             patch("gdwh_api.time.sleep"):
+            result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert result == {"status": "deleted"}
+        assert session.delete.call_count == 2
+
+    def test_dauerhafter_konflikt_wird_nach_allen_versuchen_weitergegeben(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(409, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session), \
+             patch("gdwh_api.time.sleep") as mock_sleep:
+            with pytest.raises(req_module.HTTPError):
+                gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert session.delete.call_count == 4  # 1 Erstversuch + 3 Retries
+        assert mock_sleep.call_count == 3
+
+    def test_nicht_transienter_fehler_wird_sofort_weitergegeben_ohne_retry(self):
+        session = _mock_gdwh_session()
+        session.delete.return_value = _mock_response(403, raise_on_status=True)
+        with patch("gdwh_api._gdwh_session", return_value=session), \
+             patch("gdwh_api.time.sleep") as mock_sleep:
+            with pytest.raises(req_module.HTTPError):
+                gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
+        assert session.delete.call_count == 1
+        mock_sleep.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

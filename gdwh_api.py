@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -131,6 +132,63 @@ def gdwh_delete_import(base_url: str, gds_key: str,
         return {"status": str(r.status_code)}
 
 
+def gdwh_get_job(base_url: str, job_id) -> Dict:
+    """Holt den aktuellen Stand eines GDWH-Jobs (GET /api/jobs/{jobId}),
+    z.B. um den asynchronen Lösch-Job aus gdwh_delete_import() zu verfolgen."""
+    url = f"{base_url}api/jobs/{job_id}"
+    with _gdwh_session() as s:
+        r = s.get(url, timeout=(30, 60))
+    r.raise_for_status()
+    return r.json()
+
+
+# Swagger dokumentiert "status" nur als "string" (kein Enum) -> Erkennung
+# heuristisch über gängige Erfolg/Fehler-Schlüsselwörter, case-insensitive.
+GDWH_JOB_STATUS_SUCCESS = {"completed", "complete", "success", "succeeded", "done", "finished", "ok"}
+GDWH_JOB_STATUS_FAILURE = {"failed", "failure", "error", "cancelled", "canceled", "aborted"}
+
+
+def gdwh_wait_for_jobs(base_url: str, job_ids: Dict[str, str], timeout: float = 300.0,
+                        interval: float = 4.0, on_poll=None) -> Dict[str, Dict]:
+    """
+    Pollt mehrere GDWH-Jobs interleaved (ein GET pro Job und Runde), bis alle
+    einen terminalen Status erreichen (Erfolg oder Fehler) oder das
+    gemeinsame Timeout abläuft. Damit blockiert ein langsamer Job nicht das
+    Verfolgen der übrigen – wichtig bei Batch-Löschungen vieler DataPackages,
+    deren Jobs serverseitig unterschiedlich lange laufen bzw. parallel
+    bearbeitet werden.
+
+    job_ids: Mapping frei wählbarer Key (z.B. DataPackage-ID) -> Job-ID.
+    Gibt ein Mapping Key -> letzter bekannter Job-Stand zurück; Keys, deren
+    Job nie erfolgreich abgefragt werden konnte, fehlen im Ergebnis – der
+    Aufrufer muss das wie ein unbekanntes/nicht-terminales Ergebnis
+    behandeln (Status/Timeout selbst auswerten, NICHT automatisch als
+    Erfolg werten).
+
+    on_poll(key, job_dict), falls gesetzt, wird nach jedem erfolgreichen
+    Poll aufgerufen (z.B. für Live-Fortschrittsanzeige in der GUI).
+    """
+    pending = dict(job_ids)
+    results: Dict[str, Dict] = {}
+    deadline = time.time() + timeout
+    while pending:
+        for key, job_id in list(pending.items()):
+            try:
+                job = gdwh_get_job(base_url, job_id)
+            except requests.RequestException:
+                continue  # transientes GET-Problem: nächste Runde erneut versuchen
+            results[key] = job
+            if on_poll is not None:
+                on_poll(key, job)
+            status = str(job.get("status", "")).strip().lower()
+            if status in GDWH_JOB_STATUS_SUCCESS or status in GDWH_JOB_STATUS_FAILURE:
+                pending.pop(key)
+        if not pending or time.time() >= deadline:
+            break
+        time.sleep(interval)
+    return results
+
+
 def gdwh_delete_data_package(base_url: str, gds_key: str, datapackage_id: str) -> Dict:
     """
     Löscht den DataPackage-Ordner im Ingest-Bucket (Aufräumschritt, siehe
@@ -154,6 +212,10 @@ def gdwh_delete_data_package(base_url: str, gds_key: str, datapackage_id: str) -
         return {"status": str(r.status_code)}
 
 
+_CLEANUP_RETRY_DELAYS = (2, 5, 10)  # Sekunden, bei transienten Fehlern (Job evtl. noch aktiv)
+_CLEANUP_TRANSIENT_STATUS = {409, 423, 425, 500, 502, 503, 504}
+
+
 def gdwh_cleanup_data_package(base_url: str, gds_key: str,
                                datapackage_id: str) -> Optional[Dict]:
     """
@@ -165,13 +227,26 @@ def gdwh_cleanup_data_package(base_url: str, gds_key: str,
     (z.B. Berechtigung, Netzwerk) werden weitergereicht, damit der Aufrufer
     sie vom eigentlichen (bereits erfolgreichen) Lösch-Job unterscheiden und
     separat protokollieren kann.
+
+    Der Haupt-Lösch-Job (gdwh_delete_import) läuft asynchron; ein direkt
+    danach ausgeführter Cleanup kann auf einen noch laufenden Job treffen
+    (Konflikt/Sperre). Bei typisch transienten HTTP-Codes wird deshalb mit
+    kurzer Wartezeit erneut versucht, statt sofort als Fehler zu gelten.
     """
-    try:
-        return gdwh_delete_data_package(base_url, gds_key, datapackage_id)
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
-            return None
-        raise
+    last_exc: Optional[requests.HTTPError] = None
+    for attempt, delay in enumerate((0,) + _CLEANUP_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return gdwh_delete_data_package(base_url, gds_key, datapackage_id)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404:
+                return None
+            if status not in _CLEANUP_TRANSIENT_STATUS:
+                raise
+            last_exc = exc
+    raise last_exc
 
 
 def gdwh_import_id(imp: Dict) -> str:

@@ -40,6 +40,7 @@ from stac_api import (
 from gdwh_api import (
     GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
     gdwh_get_imports, gdwh_delete_import, gdwh_cleanup_data_package,
+    gdwh_wait_for_jobs, GDWH_JOB_STATUS_SUCCESS, GDWH_JOB_STATUS_FAILURE,
     gdwh_import_id, gdwh_import_date, gdwh_import_status,
     gdwh_import_footprint_bbox,
     gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,
@@ -57,6 +58,13 @@ GDWH_ALL_GDS_OPTION = "Alle GDS"
 # normal und KEINE Anomalie. Erst danach gilt ein fehlender Match als
 # vermutlich verwaister Alt-Eintrag (siehe _gdwh_apply_filter).
 _GDWH_PENDING_HOURS = 24
+
+# Polling des Lösch-Jobs (GET /api/jobs/{jobId}) nach dem DELETE-Aufruf:
+# solange warten bis der Job einen terminalen Status meldet (Erfolg/Fehler),
+# max. jedoch _GDWH_JOB_POLL_TIMEOUT Sekunden pro Package, bevor mit
+# unbekanntem Status weitergefahren wird (siehe gdwh_wait_for_job).
+_GDWH_JOB_POLL_TIMEOUT  = 300.0
+_GDWH_JOB_POLL_INTERVAL = 4.0
 
 
 def _gdwh_is_pending(imp: Dict) -> bool:
@@ -562,34 +570,41 @@ class KryDeleteApp(tk.Tk):
         ttk.Label(
             sec, text="z.B. 2023  —  Leer = alle Jahre",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=1, column=2, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Item-ID:").grid(row=2, column=0, sticky="w",
+        ttk.Label(sec, text="Area:").grid(row=2, column=0, sticky="w",
+                                           padx=(0, 8), pady=(6, 0))
+        self._area_filter_var = tk.StringVar()
+        self._area_filter_var.trace_add("write", lambda *_: self._apply_filters())
+        ttk.Entry(sec, textvariable=self._area_filter_var, width=46).grid(
+            row=2, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(6, 0))
+
+        ttk.Label(sec, text="Item-ID:").grid(row=3, column=0, sticky="w",
                                               padx=(0, 8), pady=(6, 0))
         self._item_id_var = tk.StringVar(value="")
         self._item_id_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._item_id_var, width=46).grid(
-            row=2, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(6, 0))
+            row=3, column=1, columnspan=2, sticky="ew", padx=(0, 10), pady=(6, 0))
         ttk.Label(
             sec, text="Teilstring genügt  —  filtert die geladene Liste  —  Leer = alle Items",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=2, column=3, sticky="w", pady=(6, 0))
+        ).grid(row=3, column=3, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Asset-Key:").grid(row=3, column=0, sticky="w",
+        ttk.Label(sec, text="Asset-Key:").grid(row=4, column=0, sticky="w",
                                                 padx=(0, 8), pady=(6, 0))
         self._asset_filter_var = tk.StringVar()
         self._asset_filter_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._asset_filter_var, width=30).grid(
-            row=3, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
+            row=4, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
         ttk.Label(
             sec, text='Teilstring, z.B. "nrgb" oder "16bit"  —  Leer = alle Assets',
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=3, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=4, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Dateiendung:").grid(row=4, column=0, sticky="w",
+        ttk.Label(sec, text="Dateiendung:").grid(row=5, column=0, sticky="w",
                                                   padx=(0, 8), pady=(6, 0))
         ext_frame = ttk.Frame(sec)
-        ext_frame.grid(row=4, column=1, columnspan=3, sticky="w", pady=(6, 0))
+        ext_frame.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 0))
 
         self._ext_vars: List[Tuple[tk.BooleanVar, List[str]]] = []
         for label, exts in EXT_PRESETS:
@@ -835,25 +850,25 @@ class KryDeleteApp(tk.Tk):
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
         ).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
 
-        ttk.Label(sec, text="AREA:").grid(row=1, column=3, sticky="w",
-                                           padx=(20, 8), pady=(6, 0))
+        ttk.Label(sec, text="AREA:").grid(row=2, column=0, sticky="w",
+                                           padx=(0, 8), pady=(6, 0))
         self._gdwh_area_filter_var = tk.StringVar()
         self._gdwh_area_filter_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
         ttk.Entry(sec, textvariable=self._gdwh_area_filter_var, width=14).grid(
-            row=1, column=4, sticky="w", pady=(6, 0))
+            row=2, column=1, sticky="w", pady=(6, 0))
         ttk.Label(
             sec, text="z.B. OBERAAR  —  Leer = alle Areas",
             font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
-        ).grid(row=1, column=5, sticky="w", padx=(8, 0), pady=(6, 0))
+        ).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
 
-        ttk.Label(sec, text="GDS-Key:").grid(row=2, column=0, sticky="w",
+        ttk.Label(sec, text="GDS-Key:").grid(row=3, column=0, sticky="w",
                                               padx=(0, 8), pady=(6, 0))
         self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
         self._gdwh_gds_combo = ttk.Combobox(
             sec, textvariable=self._gdwh_gds_key_var,
             values=[GDWH_ALL_GDS_OPTION] + GDWH_GDS_KEYS, state="readonly", width=28,
         )
-        self._gdwh_gds_combo.grid(row=2, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
+        self._gdwh_gds_combo.grid(row=3, column=1, sticky="w", padx=(0, 10), pady=(6, 0))
         self._gdwh_gds_combo.bind(
             "<<ComboboxSelected>>", self._gdwh_on_gds_key_change)
 
@@ -862,7 +877,7 @@ class KryDeleteApp(tk.Tk):
             command=self._gdwh_fetch_imports, state="normal",
         )
         self._gdwh_fetch_btn.grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
     def _build_gdwh_step3(self, parent):
         sec = ttk.LabelFrame(parent, text="3   DataPackages auswählen zum Löschen",
@@ -1388,6 +1403,7 @@ class KryDeleteApp(tk.Tk):
         id_filter   = self._item_id_var.get().strip().lower()
         typ_filter  = AUFTRAGSTYPEN.get(self._auftragstyp_var.get(), "").strip().lower()
         year_filter = self._year_filter_var.get().strip()
+        area_filter = self._area_filter_var.get().strip()
         key_filter  = self._asset_filter_var.get().strip().lower()
         extensions  = self._get_active_extensions()
         assets_map: Dict[str, List[str]] = {}
@@ -1414,6 +1430,9 @@ class KryDeleteApp(tk.Tk):
             items = [it for it in items if typ_filter in it["id"].lower()]
         if year_filter:
             items = [it for it in items if stac_item_year(it) == year_filter]
+        if area_filter:
+            items = [it for it in items
+                     if area_filter.lower() in stac_item_area(it).lower()]
         if self._show_no_thumb_only:
             items = [it for it in items
                      if not self._item_has_thumbnail(it["id"])
@@ -2821,42 +2840,26 @@ class KryDeleteApp(tk.Tk):
         gds_key_by_pkg = {pid: (imp.get("gdsKey") or gds_key)
                           for pid, (imp, _m) in enriched_map.items()}
 
-        for i, pkg_id in enumerate(pkg_ids, 1):
+        unclear_list = []  # Jobs ohne eindeutigen Endstatus nach Timeout (siehe unten)
+
+        # Phase 1: ALLE Lösch-Jobs zuerst starten (statt pro Package erst auf
+        # den vorherigen Job zu warten) – die Jobs laufen serverseitig
+        # asynchron/unabhängig voneinander, serielles Warten würde eine
+        # Batch-Löschung unnötig auf die Summe aller Einzel-Laufzeiten
+        # aufblähen statt auf die längste.
+        job_id_by_pkg: Dict[str, str] = {}
+        for pkg_id in pkg_ids:
             pkg_area    = area_by_pkg.get(pkg_id, "unbekannt")
             pkg_gds_key = gds_key_by_pkg.get(pkg_id, gds_key)
             try:
-                job = gdwh_delete_import(
-                    base_url,
-                    pkg_gds_key, pkg_id, email)
-                job_id     = job.get("id", "?")
-                job_status = job.get("status", "gestartet")
+                job = gdwh_delete_import(base_url, pkg_gds_key, pkg_id, email)
+                job_id = job.get("id", "?")
+                job_id_by_pkg[pkg_id] = job_id
                 self._gdwh_log_write(
-                    f"  [OK]  Package gelöscht: {pkg_id}  |  GDS-Key: {pkg_gds_key}"
-                    f"  |  Area: {pkg_area}\n"
-                    f"        Job-ID: {job_id}  |  Status: {job_status}\n")
+                    f"  Löschjob gestartet: {pkg_id}  |  GDS-Key: {pkg_gds_key}"
+                    f"  |  Area: {pkg_area}  |  Job-ID: {job_id}\n")
                 session_logger.info(
-                    f"[GDWH OK] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
-                ok_list.append(pkg_id)
-
-                # Bucket aufräumen: falls noch ein DataPackage-Ordner mit
-                # derselben ID im Ingest-Bucket liegt (Import erfolgt, aber
-                # nie aufgeräumt), jetzt zusätzlich löschen – sonst bleibt
-                # das Package im GDWH-Portal als "hängendes" DataPackage
-                # sichtbar und blockiert einen sauberen Neu-Import.
-                try:
-                    cleaned = gdwh_cleanup_data_package(base_url, pkg_gds_key, pkg_id)
-                    if cleaned is not None:
-                        self._gdwh_log_write(
-                            "        Bucket-DataPackage ebenfalls gelöscht.\n")
-                        session_logger.info(
-                            f"[GDWH BUCKET CLEANUP OK] {env}/{pkg_gds_key}/{pkg_id}")
-                except Exception as cleanup_exc:
-                    self._gdwh_log_write(
-                        f"        [WARNUNG] Bucket-DataPackage konnte nicht "
-                        f"gelöscht werden: {cleanup_exc}\n")
-                    session_logger.warning(
-                        f"[GDWH BUCKET CLEANUP FAIL] {env}/{pkg_gds_key}/{pkg_id}  "
-                        f"→  {cleanup_exc}")
+                    f"[GDWH JOB START] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
             except Exception as exc:
                 self._gdwh_log_write(
                     f"  [FAIL] Package: {pkg_id}  |  GDS-Key: {pkg_gds_key}"
@@ -2865,31 +2868,115 @@ class KryDeleteApp(tk.Tk):
                     f"[GDWH FAIL] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  →  {exc}")
                 fail_list.append(pkg_id)
 
-            self.after(0, lambda v=i: self._gdwh_progress.configure(value=v))
+        # Phase 2: alle gestarteten Jobs interleaved pollen (GET /api/jobs/
+        # {jobId}), statt den DELETE-Request selbst als "erledigt" zu werten
+        # – jeder Job läuft serverseitig asynchron weiter.
+        done_count = [0]
+
+        def _on_poll(_pkg_id, job):
+            status = str(job.get("status", "")).strip().lower()
+            if status in GDWH_JOB_STATUS_SUCCESS or status in GDWH_JOB_STATUS_FAILURE:
+                done_count[0] += 1
+                self.after(0, lambda v=done_count[0]: self._gdwh_progress.configure(value=v))
+            self.after(0, lambda: self._gdwh_status_lbl.configure(
+                text=f"Warte auf GDWH-Jobs … {done_count[0]}/{len(job_id_by_pkg)} abgeschlossen"))
+
+        final_jobs = gdwh_wait_for_jobs(
+            base_url, job_id_by_pkg,
+            timeout=_GDWH_JOB_POLL_TIMEOUT, interval=_GDWH_JOB_POLL_INTERVAL,
+            on_poll=_on_poll,
+        ) if job_id_by_pkg else {}
+
+        # Phase 3: Ergebnis je Package auswerten; Bucket-Cleanup NUR nach
+        # bestätigtem Job-Erfolg (sonst würde ein noch laufender Lösch-Job
+        # durch den Cleanup-Aufruf gestört – siehe Kommentar unten).
+        for pkg_id, job_id in job_id_by_pkg.items():
+            pkg_area    = area_by_pkg.get(pkg_id, "unbekannt")
+            pkg_gds_key = gds_key_by_pkg.get(pkg_id, gds_key)
+            final_job    = final_jobs.get(pkg_id, {})
+            final_status = str(final_job.get("status", "")).strip().lower()
+
+            if final_status in GDWH_JOB_STATUS_FAILURE:
+                result = final_job.get("result") or final_job.get("log") or ""
+                self._gdwh_log_write(
+                    f"  [FAIL] Job meldet Fehlschlag: {pkg_id}  |  Status: {final_status}"
+                    f"  →  {result}\n")
+                session_logger.warning(
+                    f"[GDWH JOB FAILED] {env}/{pkg_gds_key}/{pkg_id}  Job: {job_id}  →  {result}")
+                fail_list.append(pkg_id)
+                continue
+
+            if final_status not in GDWH_JOB_STATUS_SUCCESS:
+                self._gdwh_log_write(
+                    f"  [UNKLAR] Job noch nicht abgeschlossen nach "
+                    f"{_GDWH_JOB_POLL_TIMEOUT:.0f}s: {pkg_id}  |  letzter Status: "
+                    f"{final_job.get('status', '?')}  |  Abschluss/Bucket-Aufräumen bitte "
+                    f"manuell per E-Mail/GDWH-Portal prüfen.\n")
+                session_logger.warning(
+                    f"[GDWH JOB TIMEOUT] {env}/{pkg_gds_key}/{pkg_id}  Job: {job_id}  "
+                    f"letzter Status: {final_job.get('status', '?')}")
+                unclear_list.append(pkg_id)
+                continue
+
+            self._gdwh_log_write(
+                f"  [OK]  Job erfolgreich abgeschlossen: {pkg_id}  |  Status: "
+                f"{final_job.get('status', '?')}\n")
+            session_logger.info(
+                f"[GDWH OK] {env}/{pkg_gds_key}/{pkg_id}  Area: {pkg_area}  Job: {job_id}")
+            ok_list.append(pkg_id)
+
+            # Bucket aufräumen: falls noch ein DataPackage-Ordner mit
+            # derselben ID im Ingest-Bucket liegt (Import erfolgt, aber nie
+            # aufgeräumt), jetzt zusätzlich löschen – sonst bleibt das
+            # Package im GDWH-Portal als "hängendes" DataPackage sichtbar
+            # und blockiert einen sauberen Neu-Import.
+            try:
+                cleaned = gdwh_cleanup_data_package(base_url, pkg_gds_key, pkg_id)
+                if cleaned is not None:
+                    self._gdwh_log_write(
+                        "        Bucket-DataPackage ebenfalls gelöscht.\n")
+                    session_logger.info(
+                        f"[GDWH BUCKET CLEANUP OK] {env}/{pkg_gds_key}/{pkg_id}")
+            except Exception as cleanup_exc:
+                self._gdwh_log_write(
+                    f"        [WARNUNG] Bucket-DataPackage konnte nicht "
+                    f"gelöscht werden: {cleanup_exc}\n")
+                session_logger.warning(
+                    f"[GDWH BUCKET CLEANUP FAIL] {env}/{pkg_gds_key}/{pkg_id}  "
+                    f"→  {cleanup_exc}")
 
         ts2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._gdwh_log_write(
             f"\n{'='*60}\n[{ts2}] ABGESCHLOSSEN\n"
-            f"  Erfolgreich:    {len(ok_list)}\n"
-            f"  Fehlgeschlagen: {len(fail_list)}\n"
+            f"  Erfolgreich bestätigt: {len(ok_list)}\n"
+            f"  Fehlgeschlagen:        {len(fail_list)}\n"
+            f"  Status unklar/Timeout: {len(unclear_list)}\n"
             f"{'='*60}\n"
         )
         session_logger.info(
-            f"[GDWH END] OK: {len(ok_list)} | FAIL: {len(fail_list)}")
+            f"[GDWH END] OK: {len(ok_list)} | FAIL: {len(fail_list)} | "
+            f"UNKLAR: {len(unclear_list)}")
 
         note = ""
-        if ok_list and email:
-            note = f"\n\nBenachrichtigung wird an\n{email}\ngeschickt sobald die Jobs abgeschlossen sind."
+        if unclear_list:
+            note = ("\n\nHinweis: Bei manchen Packages konnte der Job-Abschluss nicht "
+                     f"innert {_GDWH_JOB_POLL_TIMEOUT:.0f}s bestätigt werden – Status bitte "
+                     "per E-Mail-Benachrichtigung oder im GDWH-Portal prüfen.")
+        elif ok_list and not email:
+            note = "\n\nHinweis: Ohne E-Mail-Adresse keine zusätzliche Abschluss-Benachrichtigung."
 
+        self.after(0, lambda: self._gdwh_progress.configure(value=len(pkg_ids)))
         self.after(0, lambda: self._gdwh_status_lbl.configure(
-            text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler"))
+            text=f"Fertig: {len(ok_list)} OK  /  {len(fail_list)} Fehler  /  "
+                 f"{len(unclear_list)} unklar"))
         self.after(0, lambda: self._gdwh_fetch_btn.config(state="normal"))
         self.after(0, lambda: self._set_gdwh_env_controls_locked(False))
         self.after(0, lambda: self._gdwh_remove_deleted_rows(ok_list))
         self.after(0, lambda: messagebox.showinfo(
             "GDWH Löschung abgeschlossen",
-            f"Erfolgreich:    {len(ok_list)}\n"
-            f"Fehlgeschlagen: {len(fail_list)}"
+            f"Erfolgreich bestätigt: {len(ok_list)}\n"
+            f"Fehlgeschlagen:        {len(fail_list)}\n"
+            f"Status unklar/Timeout: {len(unclear_list)}"
             f"{note}",
         ))
 
