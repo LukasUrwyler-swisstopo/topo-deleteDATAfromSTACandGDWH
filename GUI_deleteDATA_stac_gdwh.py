@@ -1,5 +1,5 @@
 """
-0_GUI_stac_gdwh_delete_Data.py  –  STAC / GDWH Deleting-Tool
+GUI_deleteDATA_stac_gdwh.py  –  STAC / GDWH Deleting-Tool
 
 Tab 1 – STAC Items & Assets:
   Löscht Assets/Items aus der Collection "ch.swisstopo.spezialbefliegungen".
@@ -30,14 +30,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 
-from stac_api import (
+from api.stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
     get_item_direct, get_collection_items,
     delete_asset, delete_item, check_asset_info, asset_area, browser_url,
     stac_item_year, stac_item_area, stac_item_acq_date,
     list_asset_uploads, abort_asset_upload,
 )
-from gdwh_api import (
+from api.gdwh_api import (
     GDWH_ENVIRONMENTS, GDWH_GDS_KEYS,
     gdwh_get_imports, gdwh_delete_import, gdwh_cleanup_data_package,
     gdwh_wait_for_jobs, GDWH_JOB_STATUS_SUCCESS, GDWH_JOB_STATUS_FAILURE,

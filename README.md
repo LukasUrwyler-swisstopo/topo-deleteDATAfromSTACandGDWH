@@ -6,7 +6,7 @@ Kleines GUI-Tool, um Daten gezielt aus dem **Geodata-Warehouse (GDWH)** und aus 
 
 Eingabe im cmd-Terminal:
 ```bash
-python pfad/0_GUI_stac_gdwh_delete_Data.py
+python pfad/GUI_deleteDATA_stac_gdwh.py
 ```
 <img width="713" height="676" alt="image" src="https://github.com/user-attachments/assets/6c11bb18-c7a4-4faf-8f76-7624d0f838a9" />
 
@@ -81,7 +81,7 @@ Wird durch die Löschung ein Item komplett leer, entfernt das Tool es automatisc
 ## Tests
 
 ```bash
-pytest test_functions.py -v
+pytest test/test_functions.py -v
 ```
 
 ---

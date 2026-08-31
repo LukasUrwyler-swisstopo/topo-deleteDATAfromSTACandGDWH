@@ -13,14 +13,14 @@ from unittest.mock import MagicMock, patch
 
 import requests as req_module
 
-from stac_api import (
+from api.stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
     get_item_direct, get_collection_items,
     delete_asset, delete_item,
     check_asset_info,
     stac_item_year, stac_item_area,
 )
-from gdwh_api import (
+from api.gdwh_api import (
     GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_delete_import,
     gdwh_delete_data_package, gdwh_cleanup_data_package,
@@ -58,7 +58,7 @@ def _mock_gdwh_session() -> MagicMock:
 
     WICHTIG: gdwh_get_imports()/gdwh_delete_import() rufen intern s.get()/
     s.delete() auf einer Session-INSTANZ auf, nicht das Modul-Level
-    requests.get()/requests.delete(). Ein `patch("gdwh_api.requests.get", ...)`
+    requests.get()/requests.delete(). Ein `patch("api.gdwh_api.requests.get", ...)`
     greift deshalb nicht (Session.get() ruft nie das Modul-Level-Symbol auf)
     – ohne dieses Session-Mock würden die Tests bei vorhandenem Netzzugriff
     echte Requests gegen das reale GDWH abfeuern."""
@@ -114,16 +114,16 @@ class TestCheckAssetInfo:
         assert check_asset_info("", AUTH)["status"] == -1
 
     def test_200_ok(self):
-        with patch("stac_api.requests.head", return_value=self._resp(200)):
+        with patch("api.stac_api.requests.head", return_value=self._resp(200)):
             assert check_asset_info(self.URL, AUTH)["status"] == 200
 
     def test_404_nicht_gefunden(self):
-        with patch("stac_api.requests.head", return_value=self._resp(404)):
+        with patch("api.stac_api.requests.head", return_value=self._resp(404)):
             assert check_asset_info(self.URL, AUTH)["status"] == 404
 
     def test_403_wird_mit_auth_wiederholt(self):
         """Bei 403 soll ein zweiter HEAD-Request mit Auth gesendet werden."""
-        with patch("stac_api.requests.head",
+        with patch("api.stac_api.requests.head",
                    side_effect=[self._resp(403), self._resp(200)]) as mock_head:
             result = check_asset_info(self.URL, AUTH)
         assert result["status"] == 200
@@ -132,18 +132,18 @@ class TestCheckAssetInfo:
         assert kwargs.get("auth") == AUTH
 
     def test_timeout_gibt_minus_2(self):
-        with patch("stac_api.requests.head",
+        with patch("api.stac_api.requests.head",
                    side_effect=req_module.exceptions.Timeout):
             assert check_asset_info(self.URL, AUTH)["status"] == -2
 
     def test_netzwerkfehler_gibt_minus_3(self):
-        with patch("stac_api.requests.head",
+        with patch("api.stac_api.requests.head",
                    side_effect=ConnectionError("no route")):
             assert check_asset_info(self.URL, AUTH)["status"] == -3
 
     def test_groesse_und_datum_werden_gelesen(self):
         headers = {"Content-Length": "12345", "Last-Modified": "Wed, 20 Aug 2024 10:00:00 GMT"}
-        with patch("stac_api.requests.head", return_value=self._resp(200, headers)):
+        with patch("api.stac_api.requests.head", return_value=self._resp(200, headers)):
             result = check_asset_info(self.URL, AUTH)
         assert result["size_bytes"] == 12345
         assert result["last_modified"] == headers["Last-Modified"]
@@ -154,8 +154,8 @@ class TestCheckAssetInfo:
         206/Content-Range, daraufhin soll status auf -4 (kein Fehler) wechseln."""
         total_size = 60 * 1024 ** 3
         range_resp = self._resp(206, {"Content-Range": f"bytes 0-0/{total_size}"})
-        with patch("stac_api.requests.head", return_value=self._resp(400)), \
-             patch("stac_api.requests.get", return_value=range_resp):
+        with patch("api.stac_api.requests.head", return_value=self._resp(400)), \
+             patch("api.stac_api.requests.get", return_value=range_resp):
             result = check_asset_info(self.URL, AUTH)
         assert result["status"] == -4
         assert result["size_bytes"] == total_size
@@ -163,8 +163,8 @@ class TestCheckAssetInfo:
     def test_400_unter_50gb_bleibt_echter_fehler(self):
         """Ein 400 ohne bestätigte Range-Antwort > 50 GB ist ein echter
         Fehler und darf nicht als -4 maskiert werden."""
-        with patch("stac_api.requests.head", return_value=self._resp(400)), \
-             patch("stac_api.requests.get", return_value=self._resp(404)):
+        with patch("api.stac_api.requests.head", return_value=self._resp(400)), \
+             patch("api.stac_api.requests.get", return_value=self._resp(404)):
             result = check_asset_info(self.URL, AUTH)
         assert result["status"] == 400
 
@@ -181,17 +181,17 @@ class TestGetItemDirect:
     }
 
     def test_item_gefunden(self):
-        with patch("stac_api._session_get", return_value=_mock_response(200, self.ITEM)):
+        with patch("api.stac_api._session_get", return_value=_mock_response(200, self.ITEM)):
             result = get_item_direct(BASE, AUTH, "test-item-001")
         assert result == self.ITEM
 
     def test_item_nicht_gefunden_404(self):
-        with patch("stac_api._session_get", return_value=_mock_response(404)):
+        with patch("api.stac_api._session_get", return_value=_mock_response(404)):
             result = get_item_direct(BASE, AUTH, "existiert-nicht")
         assert result is None
 
     def test_item_id_wird_getrimmt(self):
-        with patch("stac_api._session_get",
+        with patch("api.stac_api._session_get",
                    return_value=_mock_response(200, self.ITEM)) as mock_get:
             get_item_direct(BASE, AUTH, "  test-item-001  ")
         url = mock_get.call_args[0][0]
@@ -199,7 +199,7 @@ class TestGetItemDirect:
         assert "  " not in url
 
     def test_url_enthaelt_collection_und_item(self):
-        with patch("stac_api._session_get",
+        with patch("api.stac_api._session_get",
                    return_value=_mock_response(200, self.ITEM)) as mock_get:
             get_item_direct(BASE, AUTH, "item-abc")
         url = mock_get.call_args[0][0]
@@ -214,7 +214,7 @@ class TestGetCollectionItems:
 
     def test_einzelne_seite(self):
         data = {"features": [{"id": "item-1"}, {"id": "item-2"}], "links": []}
-        with patch("stac_api._session_get", return_value=_mock_response(200, data)):
+        with patch("api.stac_api._session_get", return_value=_mock_response(200, data)):
             result = get_collection_items(BASE, AUTH)
         assert len(result) == 2
 
@@ -226,7 +226,7 @@ class TestGetCollectionItems:
         page2 = {"features": [{"id": "item-2"}, {"id": "item-3"}], "links": []}
 
         responses = iter([_mock_response(200, page1), _mock_response(200, page2)])
-        with patch("stac_api._session_get", side_effect=lambda *a, **kw: next(responses)):
+        with patch("api.stac_api._session_get", side_effect=lambda *a, **kw: next(responses)):
             result = get_collection_items(BASE, AUTH)
 
         assert len(result) == 3
@@ -235,7 +235,7 @@ class TestGetCollectionItems:
 
     def test_leere_collection(self):
         data = {"features": [], "links": []}
-        with patch("stac_api._session_get", return_value=_mock_response(200, data)):
+        with patch("api.stac_api._session_get", return_value=_mock_response(200, data)):
             result = get_collection_items(BASE, AUTH)
         assert result == []
 
@@ -247,7 +247,7 @@ class TestGetCollectionItems:
         page2 = {"features": [{"id": "item-2"}], "links": []}
         log_calls = []
         responses = iter([_mock_response(200, page1), _mock_response(200, page2)])
-        with patch("stac_api._session_get", side_effect=lambda *a, **kw: next(responses)):
+        with patch("api.stac_api._session_get", side_effect=lambda *a, **kw: next(responses)):
             get_collection_items(BASE, AUTH, log_fn=lambda msg: log_calls.append(msg))
         assert len(log_calls) == 1
         assert "Paginierung" in log_calls[0]
@@ -260,31 +260,31 @@ class TestGetCollectionItems:
 class TestDeleteAsset:
 
     def test_success_200(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(200)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(200)):
             ok, code, reason = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is True
         assert code == 200
         assert reason == ""
 
     def test_success_204(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(204)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(204)):
             ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is True
         assert code == 204
 
     def test_fail_403(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(403)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(403)):
             ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is False
         assert code == 403
 
     def test_fail_404(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(404)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(404)):
             ok, code, _ = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is False
 
     def test_fail_reason_from_json_description(self):
-        with patch("stac_api._session_delete",
+        with patch("api.stac_api._session_delete",
                    return_value=_mock_response(400, json_data={"description": "Cannot delete last asset"})):
             ok, code, reason = delete_asset(BASE, AUTH, "item-001", "nrgb_cog")
         assert ok is False
@@ -292,7 +292,7 @@ class TestDeleteAsset:
         assert reason == "Cannot delete last asset"
 
     def test_url_korrekt_aufgebaut(self):
-        with patch("stac_api._session_delete",
+        with patch("api.stac_api._session_delete",
                    return_value=_mock_response(200)) as mock_del:
             delete_asset(BASE, AUTH, "item-abc", "my_asset_key")
         url = mock_del.call_args[0][0]
@@ -306,24 +306,24 @@ class TestDeleteAsset:
 class TestDeleteItem:
 
     def test_success_200(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(200)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(200)):
             ok, code, _ = delete_item(BASE, AUTH, "item-001")
         assert ok is True
         assert code == 200
 
     def test_success_204(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(204)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(204)):
             ok, _, _ = delete_item(BASE, AUTH, "item-001")
         assert ok is True
 
     def test_fail_404(self):
-        with patch("stac_api._session_delete", return_value=_mock_response(404)):
+        with patch("api.stac_api._session_delete", return_value=_mock_response(404)):
             ok, code, _ = delete_item(BASE, AUTH, "item-999")
         assert ok is False
         assert code == 404
 
     def test_url_korrekt_aufgebaut(self):
-        with patch("stac_api._session_delete",
+        with patch("api.stac_api._session_delete",
                    return_value=_mock_response(200)) as mock_del:
             delete_item(BASE, AUTH, "item-xyz")
         url = mock_del.call_args[0][0]
@@ -532,7 +532,7 @@ class TestGdwhGetImports:
         data = [{"uuid": "pkg-1"}, {"uuid": "pkg-2"}]
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == data
 
@@ -540,7 +540,7 @@ class TestGdwhGetImports:
         data = {"items": [{"uuid": "pkg-1"}], "total": 1}
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == [{"uuid": "pkg-1"}]
 
@@ -548,7 +548,7 @@ class TestGdwhGetImports:
         data = {"imports": [{"uuid": "pkg-1"}, {"uuid": "pkg-2"}]}
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert len(result) == 2
 
@@ -556,21 +556,21 @@ class TestGdwhGetImports:
         data = {"data": [{"uuid": "pkg-1"}]}
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == [{"uuid": "pkg-1"}]
 
     def test_leere_liste(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, [])
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         assert result == []
 
     def test_url_korrekt_aufgebaut(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, [])
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
         url = session.get.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/data/imports" in url
@@ -578,7 +578,7 @@ class TestGdwhGetImports:
     def test_http_fehler_wird_weitergegeben(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(500, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_get_imports(GDWH_BASE, self.GDS_KEY)
 
@@ -592,13 +592,13 @@ class TestGdwhSession:
 
     def test_sspi_auth_konfiguriert(self):
         from requests_negotiate_sspi import HttpNegotiateAuth
-        from gdwh_api import _gdwh_session, GDWH_SSL_VERIFY
+        from api.gdwh_api import _gdwh_session, GDWH_SSL_VERIFY
         with _gdwh_session() as s:
             assert isinstance(s.auth, HttpNegotiateAuth)
             assert s.verify == GDWH_SSL_VERIFY
 
     def test_kein_proxy(self):
-        from gdwh_api import _gdwh_session
+        from api.gdwh_api import _gdwh_session
         with _gdwh_session() as s:
             assert s.proxies == {"http": "", "https": ""}
 
@@ -616,14 +616,14 @@ class TestGdwhDeleteImport:
         job = {"id": "job-001", "status": "running", "progress": 0}
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, job)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == job
 
     def test_mit_email_parameter(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, {})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID,
                                email="lukas@example.com")
         _, kwargs = session.delete.call_args
@@ -632,7 +632,7 @@ class TestGdwhDeleteImport:
     def test_ohne_email_kein_params(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, {})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         _, kwargs = session.delete.call_args
         assert kwargs["params"] is None
@@ -640,7 +640,7 @@ class TestGdwhDeleteImport:
     def test_url_korrekt_aufgebaut(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, {})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         url = session.delete.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/data/imports/{self.PKG_ID}" in url
@@ -650,14 +650,14 @@ class TestGdwhDeleteImport:
         r.json.side_effect = ValueError("no json")
         session = _mock_gdwh_session()
         session.delete.return_value = r
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == {"status": "200"}
 
     def test_http_fehler_401_wird_weitergegeben(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(401, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_delete_import(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
 
@@ -673,7 +673,7 @@ class TestGdwhGetJob:
     def test_url_korrekt_aufgebaut(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, {"id": self.JOB_ID, "status": "Running"})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_get_job(GDWH_BASE, self.JOB_ID)
         url = session.get.call_args[0][0]
         assert f"api/jobs/{self.JOB_ID}" in url
@@ -682,14 +682,14 @@ class TestGdwhGetJob:
         job = {"id": self.JOB_ID, "status": "Running", "progress": 30}
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, job)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_get_job(GDWH_BASE, self.JOB_ID)
         assert result == job
 
     def test_http_fehler_wird_weitergegeben(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(404, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_get_job(GDWH_BASE, self.JOB_ID)
 
@@ -717,7 +717,7 @@ class TestGdwhWaitForJobs:
     def test_einzelner_job_sofort_erfolgreich(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, {"id": 1, "status": "Completed"})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
         assert result["pkg-1"]["status"] == "Completed"
         assert session.get.call_count == 1
@@ -729,7 +729,7 @@ class TestGdwhWaitForJobs:
             _mock_response(200, {"id": 1, "status": "Running"}),
             _mock_response(200, {"id": 1, "status": "Completed"}),
         ]
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
         assert result["pkg-1"]["status"] == "Completed"
         assert session.get.call_count == 3
@@ -738,7 +738,7 @@ class TestGdwhWaitForJobs:
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(
             200, {"id": 1, "status": "Failed", "result": "boom"})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
         assert result["pkg-1"]["status"] == "Failed"
 
@@ -758,7 +758,7 @@ class TestGdwhWaitForJobs:
 
         session = _mock_gdwh_session()
         session.get.side_effect = _get
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(
                 GDWH_BASE, {"pkg-1": 1, "pkg-2": 2}, timeout=5, interval=0.01)
         assert result["pkg-1"]["status"] == "Completed"
@@ -767,7 +767,7 @@ class TestGdwhWaitForJobs:
     def test_timeout_gibt_letzten_bekannten_stand_zurueck(self):
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, {"id": 1, "status": "Running"})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=0.05, interval=0.02)
         assert result["pkg-1"]["status"] == "Running"
 
@@ -777,7 +777,7 @@ class TestGdwhWaitForJobs:
             req_module.exceptions.ConnectionError("hiccup"),
             _mock_response(200, {"id": 1, "status": "Completed"}),
         ]
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01)
         assert result["pkg-1"]["status"] == "Completed"
 
@@ -785,14 +785,14 @@ class TestGdwhWaitForJobs:
         calls = []
         session = _mock_gdwh_session()
         session.get.return_value = _mock_response(200, {"id": 1, "status": "Completed"})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_wait_for_jobs(GDWH_BASE, {"pkg-1": 1}, timeout=5, interval=0.01,
                                on_poll=lambda k, j: calls.append((k, j["status"])))
         assert calls == [("pkg-1", "Completed")]
 
     def test_leeres_mapping_gibt_leeres_ergebnis_ohne_request(self):
         session = _mock_gdwh_session()
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_wait_for_jobs(GDWH_BASE, {}, timeout=5, interval=0.01)
         assert result == {}
         session.get.assert_not_called()
@@ -810,7 +810,7 @@ class TestGdwhDeleteDataPackage:
     def test_url_korrekt_aufgebaut(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, {})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         url = session.delete.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/dataPackages/{self.PKG_ID}" in url
@@ -819,14 +819,14 @@ class TestGdwhDeleteDataPackage:
         data = {"status": "deleted"}
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == data
 
     def test_http_fehler_wird_weitergegeben(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(500, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_delete_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
 
@@ -840,21 +840,21 @@ class TestGdwhCleanupDataPackage:
         data = {"status": "deleted"}
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == data
 
     def test_404_gibt_none_kein_fehler(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(404, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result is None
 
     def test_andere_http_fehler_werden_weitergegeben(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(500, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
 
@@ -868,8 +868,8 @@ class TestGdwhCleanupDataPackage:
             _mock_response(409, raise_on_status=True),
             _mock_response(200, {"status": "deleted"}),
         ]
-        with patch("gdwh_api._gdwh_session", return_value=session), \
-             patch("gdwh_api.time.sleep"):
+        with patch("api.gdwh_api._gdwh_session", return_value=session), \
+             patch("api.gdwh_api.time.sleep"):
             result = gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert result == {"status": "deleted"}
         assert session.delete.call_count == 2
@@ -877,8 +877,8 @@ class TestGdwhCleanupDataPackage:
     def test_dauerhafter_konflikt_wird_nach_allen_versuchen_weitergegeben(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(409, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session), \
-             patch("gdwh_api.time.sleep") as mock_sleep:
+        with patch("api.gdwh_api._gdwh_session", return_value=session), \
+             patch("api.gdwh_api.time.sleep") as mock_sleep:
             with pytest.raises(req_module.HTTPError):
                 gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert session.delete.call_count == 4  # 1 Erstversuch + 3 Retries
@@ -887,8 +887,8 @@ class TestGdwhCleanupDataPackage:
     def test_nicht_transienter_fehler_wird_sofort_weitergegeben_ohne_retry(self):
         session = _mock_gdwh_session()
         session.delete.return_value = _mock_response(403, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session), \
-             patch("gdwh_api.time.sleep") as mock_sleep:
+        with patch("api.gdwh_api._gdwh_session", return_value=session), \
+             patch("api.gdwh_api.time.sleep") as mock_sleep:
             with pytest.raises(req_module.HTTPError):
                 gdwh_cleanup_data_package(GDWH_BASE, self.GDS_KEY, self.PKG_ID)
         assert session.delete.call_count == 1
@@ -907,21 +907,21 @@ class TestGdwhSearchFileMetadata:
         data = [{"uuid": "fm-1"}, {"uuid": "fm-2"}]
         session = _mock_gdwh_session()
         session.post.return_value = _mock_response(200, data)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
         assert result == data
 
     def test_nicht_liste_gibt_leere_liste(self):
         session = _mock_gdwh_session()
         session.post.return_value = _mock_response(200, {"unerwartet": True})
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             result = gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
         assert result == []
 
     def test_url_korrekt_aufgebaut(self):
         session = _mock_gdwh_session()
         session.post.return_value = _mock_response(200, [])
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
         url = session.post.call_args[0][0]
         assert f"api/geodatasets/{self.GDS_KEY}/fileMetadata/search" in url
@@ -929,7 +929,7 @@ class TestGdwhSearchFileMetadata:
     def test_payload_enthaelt_gdskey_und_mostrecent(self):
         session = _mock_gdwh_session()
         session.post.return_value = _mock_response(200, [])
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
         _, kwargs = session.post.call_args
         assert kwargs["json"] == {"gdsKey": self.GDS_KEY, "mostRecent": True}
@@ -937,7 +937,7 @@ class TestGdwhSearchFileMetadata:
     def test_http_fehler_wird_weitergegeben(self):
         session = _mock_gdwh_session()
         session.post.return_value = _mock_response(500, raise_on_status=True)
-        with patch("gdwh_api._gdwh_session", return_value=session):
+        with patch("api.gdwh_api._gdwh_session", return_value=session):
             with pytest.raises(req_module.HTTPError):
                 gdwh_search_file_metadata(GDWH_BASE, self.GDS_KEY)
 
