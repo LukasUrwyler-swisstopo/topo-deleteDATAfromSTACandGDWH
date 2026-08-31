@@ -2408,7 +2408,7 @@ class KryDeleteApp(tk.Tk):
                 # auswertbare FileMetadata spurlos aus der gefilterten Liste.
                 if not area_val:
                     return True
-                return area_val.strip().lower() == area.lower()
+                return area.lower() in area_val.lower()
             data = [item for item in data if _area_matches(item)]
         self._gdwh_total_leichen = sum(
             1 for item in self._gdwh_enriched if _is_anomalie(item))
