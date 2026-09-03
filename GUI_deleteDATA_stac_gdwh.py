@@ -1807,7 +1807,8 @@ class KryDeleteApp(tk.Tk):
         self._show_faulty_only = not self._show_faulty_only
         self._show_faulty_btn.config(
             text=self._SHOW_ALL_BTN_LABEL if self._show_faulty_only
-                 else self._SHOW_FAULTY_BTN_LABEL)
+                 else self._SHOW_FAULTY_BTN_LABEL,
+            style="Amber.TButton" if self._show_faulty_only else "TButton")
         self._apply_filters()
         if self._show_faulty_only:
             n_assets = sum(1 for d in self._nodes.values() if d["kind"] == "asset")
@@ -1826,7 +1827,8 @@ class KryDeleteApp(tk.Tk):
         self._show_no_thumb_only = not self._show_no_thumb_only
         self._show_no_thumb_btn.config(
             text=self._SHOW_ALL_BTN_LABEL if self._show_no_thumb_only
-                 else self._SHOW_NO_THUMB_BTN_LABEL)
+                 else self._SHOW_NO_THUMB_BTN_LABEL,
+            style="Amber.TButton" if self._show_no_thumb_only else "TButton")
         self._apply_filters()
         if self._show_no_thumb_only:
             n_items = sum(1 for d in self._nodes.values() if d["kind"] == "item")
@@ -1841,7 +1843,8 @@ class KryDeleteApp(tk.Tk):
         self._show_only_thumb = not self._show_only_thumb
         self._show_only_thumb_btn.config(
             text=self._SHOW_ALL_BTN_LABEL if self._show_only_thumb
-                 else self._SHOW_ONLY_THUMB_BTN_LABEL)
+                 else self._SHOW_ONLY_THUMB_BTN_LABEL,
+            style="Amber.TButton" if self._show_only_thumb else "TButton")
         self._apply_filters()
         if self._show_only_thumb:
             n_items = sum(1 for d in self._nodes.values() if d["kind"] == "item")
@@ -3058,11 +3061,11 @@ class KryDeleteApp(tk.Tk):
         self._checked_items     = {}
         self._asset_status      = {}
         self._show_faulty_only  = False
-        self._show_faulty_btn.config(text=self._SHOW_FAULTY_BTN_LABEL)
+        self._show_faulty_btn.config(text=self._SHOW_FAULTY_BTN_LABEL, style="TButton")
         self._show_no_thumb_only = False
-        self._show_no_thumb_btn.config(text=self._SHOW_NO_THUMB_BTN_LABEL)
+        self._show_no_thumb_btn.config(text=self._SHOW_NO_THUMB_BTN_LABEL, style="TButton")
         self._show_only_thumb   = False
-        self._show_only_thumb_btn.config(text=self._SHOW_ONLY_THUMB_BTN_LABEL)
+        self._show_only_thumb_btn.config(text=self._SHOW_ONLY_THUMB_BTN_LABEL, style="TButton")
         self._check_btn.config(style="Amber.TButton")
 
     def _disable_search_btns(self):
