@@ -332,6 +332,7 @@ class KryDeleteApp(tk.Tk):
 
     _SHOW_FAULTY_BTN_LABEL   = "Fehlerhafte anzeigen"
     _SHOW_NO_THUMB_BTN_LABEL = "ITEMs ohne Thumbnail"
+    _SHOW_ONLY_THUMB_BTN_LABEL = "ITEMs only with Thumbnail"
     _SHOW_ALL_BTN_LABEL      = "Alle Assets wieder anzeigen"
     # Items/Assets mit dieser Zeichenfolge im Namen haben planmässig nie ein
     # Thumbnail (z.B. Übersichts-/Mosaik-Items) – im "ITEMs ohne Thumbnail"-
@@ -374,6 +375,9 @@ class KryDeleteApp(tk.Tk):
         self._show_faulty_only: bool = False
         # Toggle für "ITEMs ohne Thumbnail" (nur bei Auftragstyp RAM sichtbar)
         self._show_no_thumb_only: bool = False
+        # Toggle für "ITEMs only with Thumbnail" (Item hat genau 1 Asset,
+        # und dieses ist das thumbnail.jpg)
+        self._show_only_thumb: bool = False
 
         # Lade-Spinner im "ITEM-Liste laden"-Button
         self._spinner_job: Optional[str] = None
@@ -677,7 +681,13 @@ class KryDeleteApp(tk.Tk):
             sel_row, text="Fehlerhafte auswählen",
             command=self._select_faulty_assets, state="disabled",
         )
-        self._sel_faulty_btn.pack(side="left", padx=(0, 16))
+        self._sel_faulty_btn.pack(side="left", padx=(0, 4))
+
+        self._show_only_thumb_btn = ttk.Button(
+            sel_row, text=self._SHOW_ONLY_THUMB_BTN_LABEL,
+            command=self._toggle_only_thumb_filter, state="disabled",
+        )
+        self._show_only_thumb_btn.pack(side="left", padx=(0, 16))
 
         # Nur bei Auftragstyp RAM relevant (Thumbnail-Pflicht) – wird erst
         # sichtbar gepackt, wenn AUFTRAGSTYPEN[...] == "ram" ist, siehe
@@ -1382,6 +1392,17 @@ class KryDeleteApp(tk.Tk):
                 return True
         return False
 
+    def _item_only_thumbnail(self, iid: str) -> bool:
+        """Prüft anhand der ROHEN (ungefilterten) Assets, ob ein Item GENAU
+        1 Asset besitzt und dieses ein thumbnail.jpg ist – solche Items
+        bestehen praktisch nur aus dem Thumbnail, ohne echte Nutzdaten."""
+        hrefs = self._items_asset_hrefs.get(iid, {})
+        if len(hrefs) != 1:
+            return False
+        (key, href), = hrefs.items()
+        key_l = key.lower()
+        return "thumbnail" in key_l or (href and href.lower().endswith("thumbnail.jpg"))
+
     def _no_thumb_excluded(self, iid: str) -> bool:
         """True, wenn Item-ID oder eines seiner Asset-Keys
         _NO_THUMB_EXCLUDE_SUBSTR enthält – solche Items haben planmässig nie
@@ -1433,6 +1454,8 @@ class KryDeleteApp(tk.Tk):
             items = [it for it in items
                      if not self._item_has_thumbnail(it["id"])
                      and not self._no_thumb_excluded(it["id"])]
+        if self._show_only_thumb:
+            items = [it for it in items if self._item_only_thumbnail(it["id"])]
         self._populate_tree(items, assets_map)
 
     # ── STAC Asset-Tree ───────────────────────────────────────────────────────
@@ -1619,6 +1642,8 @@ class KryDeleteApp(tk.Tk):
                 text = "Keine fehlerhaften Assets/leeren Items nach aktuellem Filter."
             elif self._show_no_thumb_only:
                 text = "Keine Items ohne Thumbnail nach aktuellem Filter."
+            elif self._show_only_thumb:
+                text = "Keine Items nur mit Thumbnail nach aktuellem Filter."
             else:
                 text = "Keine Assets nach aktuellem Filter."
             self._preview_lbl.configure(text=text)
@@ -1646,6 +1671,7 @@ class KryDeleteApp(tk.Tk):
         has_data = bool(self._items_preview)
         self._show_faulty_btn.config(state="normal" if has_data else "disabled")
         self._show_no_thumb_btn.config(state="normal" if has_data else "disabled")
+        self._show_only_thumb_btn.config(state="normal" if has_data else "disabled")
         self._update_preview_label()
         self._apply_theme(self._dark)
 
@@ -1805,6 +1831,21 @@ class KryDeleteApp(tk.Tk):
         if self._show_no_thumb_only:
             n_items = sum(1 for d in self._nodes.values() if d["kind"] == "item")
             self._log_write(f"[Filter] Items ohne Thumbnail: {n_items} Item(s).\n")
+        else:
+            self._log_write("[Filter] Zeige wieder alle Assets.\n")
+
+    def _toggle_only_thumb_filter(self):
+        """Blendet die Tree-Ansicht auf Items ein/aus, die GENAU 1 Asset
+        besitzen und dieses ein thumbnail.jpg ist. Kombiniert sich mit den
+        übrigen Filtern inkl. 'Fehlerhafte anzeigen' / 'ITEMs ohne Thumbnail'."""
+        self._show_only_thumb = not self._show_only_thumb
+        self._show_only_thumb_btn.config(
+            text=self._SHOW_ALL_BTN_LABEL if self._show_only_thumb
+                 else self._SHOW_ONLY_THUMB_BTN_LABEL)
+        self._apply_filters()
+        if self._show_only_thumb:
+            n_items = sum(1 for d in self._nodes.values() if d["kind"] == "item")
+            self._log_write(f"[Filter] ITEMs nur mit Thumbnail: {n_items} Item(s).\n")
         else:
             self._log_write("[Filter] Zeige wieder alle Assets.\n")
 
@@ -3020,6 +3061,8 @@ class KryDeleteApp(tk.Tk):
         self._show_faulty_btn.config(text=self._SHOW_FAULTY_BTN_LABEL)
         self._show_no_thumb_only = False
         self._show_no_thumb_btn.config(text=self._SHOW_NO_THUMB_BTN_LABEL)
+        self._show_only_thumb   = False
+        self._show_only_thumb_btn.config(text=self._SHOW_ONLY_THUMB_BTN_LABEL)
         self._check_btn.config(style="Amber.TButton")
 
     def _disable_search_btns(self):
